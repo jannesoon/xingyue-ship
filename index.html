@@ -47,7 +47,7 @@
             Menu: () => <path d="M4 6h16M4 12h16M4 18h16" />,
             Plus: () => <path d="M12 5v14M5 12h14" />,
             MessageSquare: () => <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />,
-            Settings: () => <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.74v-.47a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />,
+            Settings: () => <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1-1-1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.1a2 2 0 0 1-1-1.74v-.47a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />,
             Send: () => <path d="M22 2 11 13M22 2l-7 20-4-9-9-4 20-7z" />,
             User: () => <g><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></g>,
             Sparkles: () => <path d="m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z" />,
@@ -142,13 +142,16 @@
             const [playingMsgIndex, setPlayingMsgIndex] = useState(null);
             const [isTTSLoading, setIsTTSLoading] = useState(false);
 
-            const [selectedBotId, setSelectedBotId] = useState(null); 
             const [pendingBackup, setPendingBackup] = useState(null);
-            const [bots, setBots] = useState([]);
             
-            // --- 新增：健康记录状态 ---
+            // 健康记录与日历
             const [healthModalOpen, setHealthModalOpen] = useState(false);
             const [healthRecords, setHealthRecords] = useState({});
+
+            // API预设管理状态
+            const [currentPresetId, setCurrentPresetId] = useState('');
+            const [presetNameInput, setPresetNameInput] = useState('');
+            const [isSavingNewPreset, setIsSavingNewPreset] = useState(false);
 
             const [config, setConfig] = useState({
                 apiKey: '',
@@ -164,7 +167,7 @@
                 minimaxModel: 'speech-01-turbo',
                 minimaxSpeed: 1.0,
                 minimaxPitch: 0,
-                siliconflowSpeed: 1.0, // 新增：SiliconFlow 语速控制
+                siliconflowSpeed: 1.0,
                 historyLimit: 10, 
                 temperature: 0.7, 
                 frequencyPenalty: 0, 
@@ -178,7 +181,8 @@
                 localModelOptimize: true,
                 streamOutput: true,
                 minimaxUrl: 'https://api.minimaxi.com/v1/t2a_v2',
-                anniversaries: { '01-01': '元旦', '02-14': '情人节', '05-20': '520纪念日', '12-25': '圣诞节' }
+                anniversaries: { '01-01': '元旦', '02-14': '情人节', '05-20': '520纪念日', '12-25': '圣诞节' },
+                apiPresets: []
             });
             
             const [availableModels, setAvailableModels] = useState([]);
@@ -222,6 +226,7 @@
                         parsed.minimaxUrl = 'https://api.minimaxi.com/v1/t2a_v2';
                     }
                     if (!parsed.anniversaries) parsed.anniversaries = { '01-01': '元旦', '02-14': '情人节', '05-20': '520纪念日', '12-25': '圣诞节' };
+                    if (!parsed.apiPresets) parsed.apiPresets = [];
                     
                     setConfig(prev => ({...prev, ...parsed}));
                 }
@@ -233,7 +238,6 @@
                     setHistorySessions(sessions);
                 }
                 
-                // --- 新增：加载健康记录 ---
                 const storedHealth = localStorage.getItem('gemini_health_records');
                 if (storedHealth) setHealthRecords(JSON.parse(storedHealth));
                 
@@ -241,14 +245,18 @@
             }, []);
 
             useEffect(() => {
-                if (config.apiKey) localStorage.setItem('gemini_app_config', JSON.stringify(config));
-                if (config.baseUrl && config.baseUrl.includes('/v1') && config.apiType !== 'openai' && !config.baseUrl.includes('googleapis.com')) {
-                    setConfig(prev => ({...prev, apiType: 'openai'}));
-                    showToast("检测到 /v1 路径，已自动切换为 OpenAI 兼容模式");
+                try {
+                    if (config.apiKey) localStorage.setItem('gemini_app_config', JSON.stringify(config));
+                    if (config.baseUrl && config.baseUrl.includes('/v1') && config.apiType !== 'openai' && !config.baseUrl.includes('googleapis.com')) {
+                        setConfig(prev => ({...prev, apiType: 'openai'}));
+                        showToast("检测到 /v1 路径，已自动切换为 OpenAI 兼容模式");
+                    }
+                    localStorage.setItem('gemini_memories', JSON.stringify(memoryFiles));
+                    localStorage.setItem('gemini_health_records', JSON.stringify(healthRecords));
+                } catch (e) {
+                    console.error("Local storage error on config/memories/health", e);
+                    showToast("星月舱的存储空间快满啦，记得先备份一下数据哦~");
                 }
-                if (memoryFiles.length > 0) localStorage.setItem('gemini_memories', JSON.stringify(memoryFiles));
-                // --- 新增：保存健康记录 ---
-                localStorage.setItem('gemini_health_records', JSON.stringify(healthRecords));
             }, [config, memoryFiles, healthRecords]);
 
             useEffect(() => {
@@ -273,17 +281,60 @@
                 }
             }, [messages, currentSessionId]);
 
+            // [修复1] 捕获历史会话保存到 LocalStorage 时的容量超限报错
             useEffect(() => {
-                if (historySessions.length > 0) {
-                    try { localStorage.setItem('gemini_chat_sessions', JSON.stringify(historySessions)); } catch (e) { console.error("Local storage full", e); }
+                try {
+                    localStorage.setItem('gemini_chat_sessions', JSON.stringify(historySessions));
+                } catch (e) {
+                    console.error("Local storage full", e);
+                    showToast("星月舱的记忆口袋满啦，去设置里全量备份后删掉点旧对话吧~");
                 }
             }, [historySessions]);
 
             useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isLoading]);
 
-            const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 3000); };
+            const showToast = (msg, duration=3000) => { setToast(msg); setTimeout(() => setToast(null), duration); };
 
-            // --- 新增：健康日历组件 ---
+            const handleApiFieldChange = (field, value) => {
+                setConfig(prev => ({ ...prev, [field]: value }));
+                setCurrentPresetId('');
+            };
+
+            const handlePresetChange = (e) => {
+                const presetId = e.target.value;
+                setCurrentPresetId(presetId);
+                if (presetId) {
+                    const preset = config.apiPresets.find(p => p.id === presetId);
+                    if (preset) {
+                        setConfig(prev => ({ ...prev, apiType: preset.apiType, baseUrl: preset.baseUrl, apiKey: preset.apiKey, model: preset.model }));
+                        showToast(`已切换至: ${preset.name}`);
+                    }
+                }
+            };
+
+            const confirmSavePreset = () => {
+                if (!presetNameInput.trim()) { showToast("预设名字不能为空哦"); return; }
+                const newPreset = { id: Date.now().toString(), name: presetNameInput.trim(), apiType: config.apiType, baseUrl: config.baseUrl, apiKey: config.apiKey, model: config.model };
+                setConfig(prev => ({ ...prev, apiPresets: [...(prev.apiPresets || []), newPreset] }));
+                setCurrentPresetId(newPreset.id); setIsSavingNewPreset(false); setPresetNameInput(''); showToast("API 预设已存储~");
+            };
+
+            const updatePreset = () => {
+                setConfig(prev => {
+                    const newPresets = (prev.apiPresets || []).map(p => {
+                        if (p.id === currentPresetId) { return { ...p, apiType: prev.apiType, baseUrl: prev.baseUrl, apiKey: prev.apiKey, model: prev.model }; }
+                        return p;
+                    });
+                    return { ...prev, apiPresets: newPresets };
+                });
+                showToast("API 预设已更新~");
+            };
+
+            const deletePreset = () => {
+                setConfig(prev => ({ ...prev, apiPresets: (prev.apiPresets || []).filter(p => p.id !== currentPresetId) }));
+                setCurrentPresetId(''); showToast("预设已删除");
+            };
+
             const HealthCalendar = () => {
                 const [currentMonth, setCurrentMonth] = useState(new Date());
                 const [editingDate, setEditingDate] = useState(null);
@@ -372,10 +423,14 @@
             };
 
             const handleSaveConfig = () => {
-                localStorage.setItem('gemini_app_config', JSON.stringify(config));
-                localStorage.setItem('gemini_memories', JSON.stringify(memoryFiles));
-                setSettingsOpen(false);
-                showToast("配置已保存");
+                try {
+                    localStorage.setItem('gemini_app_config', JSON.stringify(config));
+                    localStorage.setItem('gemini_memories', JSON.stringify(memoryFiles));
+                    setSettingsOpen(false);
+                    showToast("配置已保存");
+                } catch (e) {
+                    showToast("空间不足，配置保存失败，请清理历史记录");
+                }
             };
 
             const createNewSession = () => {
@@ -408,13 +463,12 @@
                 updatedFiles[editingMemoryIndex].size = (sizeInBytes / 1024).toFixed(1) + ' KB';
                 updatedFiles[editingMemoryIndex].date = new Date().toLocaleDateString() + ' (已编辑)';
                 setMemoryFiles(updatedFiles);
-                localStorage.setItem('gemini_memories', JSON.stringify(updatedFiles));
+                try { localStorage.setItem('gemini_memories', JSON.stringify(updatedFiles)); } catch (e) { showToast("修改由于空间不足未能存入本地"); }
                 setEditingMemoryIndex(null);
                 showToast("记忆内容已更新");
             };
             const cancelMemoryEdit = () => { setEditingMemoryIndex(null); setEditingMemoryContent(''); };
 
-            // ================= 双引擎语音发声逻辑 (彻底移除本地系统女声) =================
             const handleTTS = async (text, index) => {
                 if (audioPlayer && playingMsgIndex === index) { audioPlayer.pause(); setAudioPlayer(null); setPlayingMsgIndex(null); return; }
                 if (audioPlayer) audioPlayer.pause();
@@ -447,21 +501,14 @@
                         const response = await fetch(fetchUrl, {
                             method: 'POST',
                             headers: { 'Authorization': `Bearer ${builtinKey}`, 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ 
-                                model: 'FunAudioLLM/CosyVoice2-0.5B', 
-                                input: cleanText, 
-                                voice: 'FunAudioLLM/CosyVoice2-0.5B:alex',
-                                speed: parseFloat(config.siliconflowSpeed) || 1.0 // 加上语速参数
-                            })
+                            body: JSON.stringify({ model: 'FunAudioLLM/CosyVoice2-0.5B', input: cleanText, voice: 'FunAudioLLM/CosyVoice2-0.5B:alex', speed: parseFloat(config.siliconflowSpeed) || 1.0 })
                         });
 
                         if (!response.ok) throw new Error(`内置通道拥挤 (${response.status})`);
-                        const blob = await response.blob();
-                        audioUrl = URL.createObjectURL(blob);
+                        const blob = await response.blob(); audioUrl = URL.createObjectURL(blob);
 
                     } else if (config.ttsEngine === 'openai') {
                         if (!config.openaiTtsKey) { setSettingsOpen(true); setActiveTab('general'); throw new Error("请先配置语音 Key"); }
-                        
                         let urlStr = (config.openaiTtsUrl || "https://api.openai.com/v1").trim();
                         if (!urlStr.startsWith('http')) urlStr = 'https://' + urlStr;
                         if (urlStr.endsWith('/chat/completions')) urlStr = urlStr.replace('/chat/completions', '');
@@ -475,14 +522,11 @@
                             body: JSON.stringify({ model: 'tts-1', input: cleanText, voice: config.openaiTtsVoice || 'echo' })
                         });
 
-                        if (!response.ok) throw new Error(`代理被拦截或不支持语音 (${response.status})`);
-                        const blob = await response.blob();
-                        audioUrl = URL.createObjectURL(blob);
+                        if (!response.ok) throw new Error(`代理被拦截或不支持 (${response.status})`);
+                        const blob = await response.blob(); audioUrl = URL.createObjectURL(blob);
 
                     } else {
-                        // --- Minimax TTS 引擎 ---
                         if (!config.minimaxKey) { setSettingsOpen(true); setActiveTab('general'); throw new Error("请先配置 Minimax 语音 Key"); }
-
                         let urlStr = (config.minimaxUrl || "https://api.minimaxi.com/v1/t2a_v2").trim();
                         if (!urlStr.startsWith('http')) urlStr = 'https://' + urlStr;
                         if (urlStr.includes('api.minimax.chat')) urlStr = urlStr.replace('api.minimax.chat', 'api.minimaxi.com');
@@ -492,24 +536,9 @@
                         }
                         
                         const fetchUrl = config.enableCorsProxy ? 'https://corsproxy.io/?' + encodeURIComponent(urlStr) : urlStr;
+                        const bodyPayload = { model: config.minimaxModel || "speech-01-turbo", text: cleanText, stream: false, voice_setting: { voice_id: config.minimaxVoiceId || "male-qn-qingse", speed: parseFloat(config.minimaxSpeed) || 1.0, vol: 1.0, pitch: parseInt(config.minimaxPitch) || 0 } };
                         
-                        const bodyPayload = { 
-                            model: config.minimaxModel || "speech-01-turbo", 
-                            text: cleanText, 
-                            stream: false, 
-                            voice_setting: { 
-                                voice_id: config.minimaxVoiceId || "male-qn-qingse", 
-                                speed: parseFloat(config.minimaxSpeed) || 1.0, 
-                                vol: 1.0, 
-                                pitch: parseInt(config.minimaxPitch) || 0 
-                            } 
-                        };
-                        const response = await fetch(fetchUrl, { 
-                            method: 'POST', 
-                            headers: { 'Authorization': `Bearer ${config.minimaxKey.trim()}`, 'Content-Type': 'application/json' }, 
-                            body: JSON.stringify(bodyPayload) 
-                        });
-                        
+                        const response = await fetch(fetchUrl, { method: 'POST', headers: { 'Authorization': `Bearer ${config.minimaxKey.trim()}`, 'Content-Type': 'application/json' }, body: JSON.stringify(bodyPayload) });
                         if (!response.ok) throw new Error(`官方接口报错 (${response.status})`);
                         
                         const blob = await response.blob();
@@ -519,34 +548,19 @@
                             if (jsonData.data && jsonData.data.audio) {
                                 const hexString = jsonData.data.audio; const bytes = new Uint8Array(hexString.length / 2);
                                 for (let i = 0; i < hexString.length; i += 2) { bytes[i / 2] = parseInt(hexString.substring(i, i + 2), 16); }
-                                const audioBlob = new Blob([bytes], { type: 'audio/mpeg' }); 
-                                audioUrl = URL.createObjectURL(audioBlob);
+                                const audioBlob = new Blob([bytes], { type: 'audio/mpeg' }); audioUrl = URL.createObjectURL(audioBlob);
                             }
-                        } else {
-                            audioUrl = URL.createObjectURL(blob); 
-                        }
+                        } else { audioUrl = URL.createObjectURL(blob); }
                     }
 
                     if (audioUrl) {
-                        const audio = new Audio(audioUrl); 
-                        audio.onended = () => { setPlayingMsgIndex(null); setAudioPlayer(null); }; 
-                        audio.play(); setAudioPlayer(audio);
-                        setIsTTSLoading(false);
-                    } else {
-                        throw new Error("音频解析失败");
-                    }
-                    
+                        const audio = new Audio(audioUrl); audio.onended = () => { setPlayingMsgIndex(null); setAudioPlayer(null); }; 
+                        audio.play(); setAudioPlayer(audio); setIsTTSLoading(false);
+                    } else { throw new Error("音频解析失败"); }
                 } catch (err) { 
-                    console.error(err);
-                    let friendlyError = err.message;
-                    if (friendlyError.includes("Failed to fetch") || friendlyError.includes("NetworkError")) {
-                        friendlyError = "隐身代理连接超时，请检查网络或稍后再试";
-                    } else {
-                        friendlyError = friendlyError.slice(0, 20) + "...连接失败";
-                    }
-                    showToast(friendlyError); 
-                    setPlayingMsgIndex(null); 
-                    setIsTTSLoading(false);
+                    console.error(err); let friendlyError = err.message;
+                    if (friendlyError.includes("Failed to fetch") || friendlyError.includes("NetworkError")) friendlyError = "隐身代理连接超时，请稍后再试"; else friendlyError = friendlyError.slice(0, 20) + "...连接失败";
+                    showToast(friendlyError); setPlayingMsgIndex(null); setIsTTSLoading(false);
                 }
             };
 
@@ -578,7 +592,6 @@
                 let txtContent = `===========================================\n星月舱聊天记录导出\n导出时间: ${new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' })}\n===========================================\n\n`;
                 messages.forEach(msg => {
                     const roleName = msg.role === 'user' ? (config.userName || '你') : (config.aiName || '星月舱 AI');
-                    // 如果存在翻页记录，只导出当前显示的那一页的内容
                     let finalContent = msg.content;
                     if (msg.role === 'model' && msg.variants && typeof msg.currentVariantIndex === 'number') {
                         finalContent = msg.variants[msg.currentVariantIndex].content;
@@ -605,25 +618,32 @@
 
             const removeFile = (index, type) => { if (type === 'memory') setMemoryFiles(prev => prev.filter((_, i) => i !== index)); };
 
+            // [修复2] 备份与还原时加入 HealthRecords 的完整支持
             const handleCreateBackup = () => {
-                const backupData = { version: '4.9', timestamp: new Date().toISOString(), config: config, memories: memoryFiles, sessions: historySessions };
+                const backupData = { 
+                    version: '4.98', 
+                    timestamp: new Date().toISOString(), 
+                    config: config, 
+                    memories: memoryFiles, 
+                    sessions: historySessions,
+                    healthRecords: healthRecords 
+                };
                 const blob = new Blob([JSON.stringify(backupData, null, 2)], { type: 'application/json' });
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a'); a.href = url; a.download = `xingyue-backup-${new Date().toISOString().slice(0, 10)}.json`;
-                document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); showToast("备份已导出");
+                document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url); showToast("全量备份已导出（含日历）");
             };
 
-            // --- 数据导入拦截 ---
             const handleRestoreBackup = (e) => {
                 const file = e.target.files[0]; if (!file) return;
                 const reader = new FileReader();
                 reader.onload = (event) => {
                     try {
                         const data = JSON.parse(event.target.result);
-                        if (data.config || data.sessions || data.memories) {
-                            setPendingBackup(data);
-                        } else {
-                            showToast("无效的备份文件");
+                        if (data.config || data.sessions || data.memories || data.healthRecords) { 
+                            setPendingBackup(data); 
+                        } else { 
+                            showToast("无效的备份文件"); 
                         }
                     } catch (err) { alert("备份文件无效或损坏"); }
                     e.target.value = ''; 
@@ -631,50 +651,46 @@
                 reader.readAsText(file);
             };
 
-            // --- 执行导入逻辑 (合并或覆盖) ---
             const executeRestore = (mode) => {
                 if (!pendingBackup) return;
                 const data = pendingBackup;
-
                 if (mode === 'overwrite') {
                     if (data.config) setConfig(data.config);
                     if (data.memories) setMemoryFiles(data.memories);
                     if (data.sessions) setHistorySessions(data.sessions);
+                    if (data.healthRecords) setHealthRecords(data.healthRecords);
                     
                     localStorage.setItem('gemini_app_config', JSON.stringify(data.config || config));
                     localStorage.setItem('gemini_memories', JSON.stringify(data.memories || []));
                     localStorage.setItem('gemini_chat_sessions', JSON.stringify(data.sessions || []));
+                    localStorage.setItem('gemini_health_records', JSON.stringify(data.healthRecords || {}));
                 } else if (mode === 'merge') {
                     const mergedConfig = { ...config, ...(data.config || {}) };
-                    setConfig(mergedConfig);
-                    localStorage.setItem('gemini_app_config', JSON.stringify(mergedConfig));
-
+                    setConfig(mergedConfig); localStorage.setItem('gemini_app_config', JSON.stringify(mergedConfig));
+                    
                     const existingMemoryNames = memoryFiles.map(m => m.name);
                     const newMemories = data.memories ? data.memories.filter(m => !existingMemoryNames.includes(m.name)) : [];
                     const mergedMemories = [...memoryFiles, ...newMemories];
-                    setMemoryFiles(mergedMemories);
-                    localStorage.setItem('gemini_memories', JSON.stringify(mergedMemories));
-
+                    setMemoryFiles(mergedMemories); localStorage.setItem('gemini_memories', JSON.stringify(mergedMemories));
+                    
                     let mergedSessions = [...historySessions];
                     if (data.sessions) {
                         data.sessions.forEach(importedSession => {
                             const existingIdx = mergedSessions.findIndex(s => s.id === importedSession.id);
-                            if (existingIdx > -1) {
-                                if (importedSession.messages.length > mergedSessions[existingIdx].messages.length) {
-                                    mergedSessions[existingIdx] = importedSession;
-                                }
-                            } else {
-                                mergedSessions.push(importedSession);
-                            }
+                            if (existingIdx > -1) { if (importedSession.messages.length > mergedSessions[existingIdx].messages.length) { mergedSessions[existingIdx] = importedSession; } } 
+                            else { mergedSessions.push(importedSession); }
                         });
                     }
                     mergedSessions.sort((a, b) => b.timestamp - a.timestamp);
-                    setHistorySessions(mergedSessions);
-                    localStorage.setItem('gemini_chat_sessions', JSON.stringify(mergedSessions));
+                    setHistorySessions(mergedSessions); localStorage.setItem('gemini_chat_sessions', JSON.stringify(mergedSessions));
+
+                    if (data.healthRecords) {
+                        const mergedHealth = { ...healthRecords, ...data.healthRecords };
+                        setHealthRecords(mergedHealth);
+                        localStorage.setItem('gemini_health_records', JSON.stringify(mergedHealth));
+                    }
                 }
-                
-                setPendingBackup(null);
-                showToast(`档案已${mode === 'merge' ? '安全合并' : '完全覆盖'}！`);
+                setPendingBackup(null); showToast(`档案已${mode === 'merge' ? '安全合并' : '完全覆盖'}！`);
                 setTimeout(() => window.location.reload(), 1000);
             };
 
@@ -699,7 +715,6 @@
                     if (summary) {
                         const thinkMatch = summary.match(/<think>([\s\S]*?)<\/think>/);
                         if (thinkMatch) summary = summary.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-
                         const dateStr = new Date().toLocaleString(); const newMemory = { name: `Archive_${new Date().toISOString().slice(0, 10)}_${Date.now().toString().slice(-4)}.txt`, size: (new Blob([summary]).size / 1024).toFixed(1) + ' KB', date: dateStr, content: `【归档记忆 ${dateStr}】\n${summary}` };
                         setMemoryFiles(prev => [...prev, newMemory]); showToast("记忆已归档！请在侧边栏查看。");
                     } else { throw new Error("无返回内容"); }
@@ -740,7 +755,6 @@
                 const timeString = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
                 const timePrompt = `\n\n【当前系统时间参考: 东八区 ${timeString}】(注意: 请自然感知时间流逝，绝对禁止在回复中主动报时或强调时间，除非用户主动问起！千万不能暴露你是模型)`;
                 
-                // --- 新增：注入健康状态与纪念日感知 ---
                 const todayStr = new Date().toISOString().split('T')[0];
                 const monthDayStr = todayStr.substring(5);
                 const healthStatus = healthRecords[todayStr] ? `user今天的身体状态是：${healthRecords[todayStr]}` : "目前身体很健康。";
@@ -750,7 +764,6 @@
                 if (todayAnniversary) {
                     healthPrompt += `\n【温馨提示：今天是 ${todayAnniversary} ！！】请在对话中自然、温柔地带出节日的祝福或关心，给她一点小惊喜。`;
                 }
-                // -----------------------
 
                 const fullSystemInstruction = finalSystemPrompt + memoryStr + timePrompt + healthPrompt;
 
@@ -805,7 +818,6 @@
                 return { url, headers, payload };
             };
 
-            // --- 新增：处理健康标记 ---
             const processHealthTag = (text) => {
                 const match = text.match(/«HEALTH:\s*(.*?)»/);
                 if (match) {
@@ -822,38 +834,19 @@
                 let newMessages = [...messages];
                 let existingModelMsg = null;
                 
-                if (newMessages[newMessages.length - 1].role === 'model') {
-                    existingModelMsg = newMessages.pop();
-                }
-                
+                if (newMessages[newMessages.length - 1].role === 'model') { existingModelMsg = newMessages.pop(); }
                 if (newMessages.length === 0) return;
                 setIsLoading(true); setError(null);
 
                 let variants = existingModelMsg?.variants ? [...existingModelMsg.variants] : [];
                 if (existingModelMsg && variants.length === 0) {
-                    variants.push({
-                        content: existingModelMsg.content || '',
-                        reasoningContent: existingModelMsg.reasoningContent || '',
-                        modelName: existingModelMsg.modelName || config.model,
-                        timestamp: existingModelMsg.timestamp || getTimestamp()
-                    });
+                    variants.push({ content: existingModelMsg.content || '', reasoningContent: existingModelMsg.reasoningContent || '', modelName: existingModelMsg.modelName || config.model, timestamp: existingModelMsg.timestamp || getTimestamp() });
                 }
                 
                 const newVariantIndex = variants.length;
                 variants.push({ content: '', reasoningContent: '', modelName: config.model, timestamp: getTimestamp() });
 
-                const updatedModelMsg = {
-                    ...existingModelMsg,
-                    role: 'model',
-                    variants: variants,
-                    currentVariantIndex: newVariantIndex,
-                    content: '',
-                    reasoningContent: '',
-                    modelName: config.model,
-                    timestamp: getTimestamp(),
-                    timestampRaw: Date.now()
-                };
-
+                const updatedModelMsg = { ...existingModelMsg, role: 'model', variants: variants, currentVariantIndex: newVariantIndex, content: '', reasoningContent: '', modelName: config.model, timestamp: getTimestamp(), timestampRaw: Date.now() };
                 setMessages([...newMessages, updatedModelMsg]);
 
                 try {
@@ -868,56 +861,40 @@
                         const data = await response.json();
                         let aiText = ''; let reasoningText = '';
                         if (config.apiType === 'openai') {
-                            const messageObj = data.choices?.[0]?.message;
-                            aiText = messageObj?.content || ""; reasoningText = messageObj?.reasoning_content || "";
+                            const messageObj = data.choices?.[0]?.message; aiText = messageObj?.content || ""; reasoningText = messageObj?.reasoning_content || "";
                         } else { aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || ""; }
                         const thinkMatch = aiText.match(/<think>([\s\S]*?)<\/think>/);
                         if (thinkMatch) { reasoningText = thinkMatch[1].trim() + (reasoningText ? '\n' + reasoningText : ''); aiText = aiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
                         if (!aiText && !reasoningText) aiText = "无回复";
-                        
-                        aiText = processHealthTag(aiText); // --- 处理健康标签 ---
-
+                        aiText = processHealthTag(aiText);
                         setMessages(prev => {
                             const msgs = [...prev]; const last = msgs[msgs.length - 1];
-                            last.variants[newVariantIndex].content = aiText;
-                            last.variants[newVariantIndex].reasoningContent = reasoningText;
+                            last.variants[newVariantIndex].content = aiText; last.variants[newVariantIndex].reasoningContent = reasoningText;
                             last.content = aiText; last.reasoningContent = reasoningText;
                             return msgs;
                         });
                         setIsLoading(false);
                     } else {
                         setIsLoading(false);
-                        const reader = response.body.getReader();
-                        const decoder = new TextDecoder("utf-8");
-                        let aiText = ""; let reasoningText = "";
-                        let buffer = "";
+                        const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8"); let aiText = ""; let reasoningText = ""; let buffer = "";
                         while (true) {
-                            const { done, value } = await reader.read();
-                            if (done) break;
-                            buffer += decoder.decode(value, { stream: true });
-                            let lines = buffer.split('\n');
-                            buffer = lines.pop();
+                            const { done, value } = await reader.read(); if (done) break;
+                            buffer += decoder.decode(value, { stream: true }); let lines = buffer.split('\n'); buffer = lines.pop();
                             for (let line of lines) {
                                 line = line.trim();
                                 if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                                     try {
                                         const data = JSON.parse(line.substring(6));
                                         if (config.apiType === 'openai') {
-                                            const delta = data.choices?.[0]?.delta;
-                                            if (delta?.reasoning_content) reasoningText += delta.reasoning_content;
-                                            if (delta?.content) aiText += delta.content;
+                                            const delta = data.choices?.[0]?.delta; if (delta?.reasoning_content) reasoningText += delta.reasoning_content; if (delta?.content) aiText += delta.content;
                                         } else { aiText += data.candidates?.[0]?.content?.parts?.[0]?.text || ""; }
-                                        
                                         let displayReasoning = reasoningText; let displayContent = aiText;
                                         const thinkMatch = aiText.match(/<think>([\s\S]*?)(<\/think>|$)/);
                                         if (thinkMatch) { displayReasoning = (reasoningText ? reasoningText + '\n' : '') + thinkMatch[1].trim(); displayContent = aiText.replace(/<think>[\s\S]*?(<\/think>|$)/, '').trim(); }
-                                        
-                                        displayContent = processHealthTag(displayContent); // --- 处理健康标签 ---
-
+                                        displayContent = processHealthTag(displayContent);
                                         setMessages(prev => { 
                                             const msgs = [...prev]; const last = msgs[msgs.length - 1];
-                                            last.variants[newVariantIndex].content = displayContent;
-                                            last.variants[newVariantIndex].reasoningContent = displayReasoning;
+                                            last.variants[newVariantIndex].content = displayContent; last.variants[newVariantIndex].reasoningContent = displayReasoning;
                                             last.content = displayContent; last.reasoningContent = displayReasoning;
                                             return msgs; 
                                         });
@@ -928,12 +905,7 @@
                     }
                 } catch (err) { 
                     setError(err.message); 
-                    setMessages(prev => {
-                        const msgs = [...prev]; const last = msgs[msgs.length - 1];
-                        last.variants[newVariantIndex].content = `错误: ${err.message}`;
-                        last.content = `错误: ${err.message}`;
-                        return msgs;
-                    });
+                    setMessages(prev => { const msgs = [...prev]; const last = msgs[msgs.length - 1]; last.variants[newVariantIndex].content = `错误: ${err.message}`; last.content = `错误: ${err.message}`; return msgs; });
                     setIsLoading(false); 
                 }
             };
@@ -950,20 +922,13 @@
                 const urls = extractUrls(input);
                 if (urls.length > 0) {
                     const isRestrictedSite = urls.some(u => u.includes('xiaohongshu.com') || u.includes('xhslink.com') || u.includes('weibo.com') || u.includes('instagram.com') || u.includes('mp.weixin.qq.com'));
-                    if (isRestrictedSite) {
-                        showToast("由于网站限制，可能无法自动读取，建议手动复制。", 5000);
-                    } else {
-                        showToast("检测到链接，正在自动读取内容...");
-                    }
+                    if (isRestrictedSite) { showToast("由于网站限制，可能无法自动读取，建议手动复制。", 5000); } else { showToast("检测到链接，正在自动读取内容..."); }
                     try {
                         const fetchPromises = urls.slice(0, 3).map(async (url) => {
                             try { const res = await fetch(`https://r.jina.ai/${url}`); if (res.ok) { const text = await res.text(); return text.includes("Cloudflare") ? `(拦截)` : `\n> **[网页内容提取] ${url}**\n> ${text.slice(0, 5000)}\n`; } } catch (e) {} return "";
                         });
                         const results = await Promise.all(fetchPromises); const webContent = results.join("\n");
-                        if (webContent.trim()) {
-                            hiddenContext = webContent;
-                            showToast("链接内容读取成功");
-                        }
+                        if (webContent.trim()) { hiddenContext = webContent; showToast("链接内容读取成功"); }
                     } catch (err) {}
                 }
 
@@ -986,64 +951,44 @@
                         const data = await response.json();
                         let aiText = ''; let reasoningText = '';
                         if (config.apiType === 'openai') {
-                            const messageObj = data.choices?.[0]?.message;
-                            aiText = messageObj?.content || ""; reasoningText = messageObj?.reasoning_content || "";
+                            const messageObj = data.choices?.[0]?.message; aiText = messageObj?.content || ""; reasoningText = messageObj?.reasoning_content || "";
                         } else { aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || ""; }
                         const thinkMatch = aiText.match(/<think>([\s\S]*?)<\/think>/);
                         if (thinkMatch) { reasoningText = thinkMatch[1].trim() + (reasoningText ? '\n' + reasoningText : ''); aiText = aiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
                         if (!aiText && !reasoningText) aiText = "无回复";
-                        
-                        aiText = processHealthTag(aiText); // --- 处理健康标签 ---
-
+                        aiText = processHealthTag(aiText);
                         setMessages(prev => [...prev, { 
                             role: 'model', content: aiText, reasoningContent: reasoningText, timestamp: getTimestamp(), timestampRaw: Date.now(), modelName: config.model,
-                            variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }],
-                            currentVariantIndex: 0
+                            variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
                         }]);
                         setIsLoading(false);
                     } else {
                         setIsLoading(false);
-                        const reader = response.body.getReader();
-                        const decoder = new TextDecoder("utf-8");
-                        let aiText = ""; let reasoningText = "";
-                        
+                        const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8"); let aiText = ""; let reasoningText = "";
                         setMessages(prev => [...prev, { 
                             role: 'model', content: '', reasoningContent: '', timestamp: getTimestamp(), timestampRaw: Date.now(), modelName: config.model,
-                            variants: [{ content: '', reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }],
-                            currentVariantIndex: 0
+                            variants: [{ content: '', reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
                         }]);
-                        
                         let buffer = "";
                         while (true) {
-                            const { done, value } = await reader.read();
-                            if (done) break;
-                            buffer += decoder.decode(value, { stream: true });
-                            let lines = buffer.split('\n');
-                            buffer = lines.pop();
+                            const { done, value } = await reader.read(); if (done) break;
+                            buffer += decoder.decode(value, { stream: true }); let lines = buffer.split('\n'); buffer = lines.pop();
                             for (let line of lines) {
                                 line = line.trim();
                                 if (line.startsWith('data: ') && line !== 'data: [DONE]') {
                                     try {
                                         const data = JSON.parse(line.substring(6));
                                         if (config.apiType === 'openai') {
-                                            const delta = data.choices?.[0]?.delta;
-                                            if (delta?.reasoning_content) reasoningText += delta.reasoning_content;
-                                            if (delta?.content) aiText += delta.content;
+                                            const delta = data.choices?.[0]?.delta; if (delta?.reasoning_content) reasoningText += delta.reasoning_content; if (delta?.content) aiText += delta.content;
                                         } else { aiText += data.candidates?.[0]?.content?.parts?.[0]?.text || ""; }
-                                        
                                         let displayReasoning = reasoningText; let displayContent = aiText;
                                         const thinkMatch = aiText.match(/<think>([\s\S]*?)(<\/think>|$)/);
                                         if (thinkMatch) { displayReasoning = (reasoningText ? reasoningText + '\n' : '') + thinkMatch[1].trim(); displayContent = aiText.replace(/<think>[\s\S]*?(<\/think>|$)/, '').trim(); }
-                                        
-                                        displayContent = processHealthTag(displayContent); // --- 处理健康标签 ---
-
+                                        displayContent = processHealthTag(displayContent);
                                         setMessages(prev => { 
-                                            const newMsgs = [...prev]; 
-                                            const lastMsg = newMsgs[newMsgs.length - 1];
-                                            lastMsg.content = displayContent; 
-                                            lastMsg.reasoningContent = displayReasoning;
-                                            lastMsg.variants[0].content = displayContent;
-                                            lastMsg.variants[0].reasoningContent = displayReasoning;
+                                            const newMsgs = [...prev]; const lastMsg = newMsgs[newMsgs.length - 1];
+                                            lastMsg.content = displayContent; lastMsg.reasoningContent = displayReasoning;
+                                            lastMsg.variants[0].content = displayContent; lastMsg.variants[0].reasoningContent = displayReasoning;
                                             return newMsgs; 
                                         });
                                     } catch (e) {}
@@ -1055,8 +1000,7 @@
                     setError(err.message); 
                     setMessages(prev => [...prev, { 
                         role: 'model', content: `错误: ${err.message}`, timestamp: getTimestamp(), modelName: config.model,
-                        variants: [{ content: `错误: ${err.message}`, reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }],
-                        currentVariantIndex: 0
+                        variants: [{ content: `错误: ${err.message}`, reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
                     }]); 
                     setIsLoading(false); 
                 }
@@ -1159,7 +1103,7 @@
                             <div className="flex items-center gap-3">
                                 <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-600"><Icon name="Menu" size={20} /></button>
                                 <div className="flex flex-col">
-                                    <span className="text-lg font-medium text-gray-800 tracking-tight leading-tight">✨星月舱v5.0 🌙💫 健康守护版</span>
+                                    <span className="text-lg font-medium text-gray-800 tracking-tight leading-tight">✨星月舱v5.1 🌙💫 守护版</span>
                                     <span className="text-[10px] text-gray-400 leading-tight">模型: {config.model} | 记忆: {memoryFiles.length} | 模式: {config.apiType === 'openai' ? 'OpenAI兼容' : '原生'}</span>
                                 </div>
                             </div>
@@ -1271,11 +1215,11 @@
                                     <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="星月交辉✨......" className="bg-transparent border-0 focus:ring-0 text-gray-800 flex-1 resize-none py-3 max-h-32 min-h-[44px] outline-none placeholder:text-gray-400 text-base" rows={1}></textarea>
                                     {(input.trim() || attachment) ? <button onClick={handleSend} disabled={isLoading} className="mb-1 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors shadow-sm"><Icon name="Send" size={18} /></button> : <button className="mb-1 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-colors"><Icon name="Mic" size={20} /></button>}
                                 </div>
-                                <div className="text-center mt-2 text-[10px] text-gray-400">API 可能会产生不准确的信息。</div>
+                                <div className="text-center mt-2 text-[10px] text-gray-400">API大模型 可能会产生不准确的信息。</div>
                             </div>
                         </div>
 
-                        {/* --- 新增：健康记录 Modal --- */}
+                        {/* --- 健康记录 Modal --- */}
                         {healthModalOpen && (
                             <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] backdrop-blur-sm animate-fade-in px-4">
                                 <div className="bg-white w-full max-w-lg rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -1306,10 +1250,103 @@
                                         <div className="flex-1 p-4 md:p-6 overflow-y-auto bg-white pb-10 md:pb-6">
                                             {activeTab === 'general' && (
                                                 <div className="space-y-6">
+                                                    
+                                                    {/* ===== 新增：API预设管理 ===== */}
+                                                    <div className="space-y-4">
+                                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">API 预设管理</h3>
+                                                        <div className="space-y-2">
+                                                            <label className="block text-[10px] text-gray-500 font-bold">选择或切换预设</label>
+                                                            <div className="flex gap-2 items-center">
+                                                                {isSavingNewPreset ? (
+                                                                    <div className="flex-1 flex gap-2">
+                                                                        <input
+                                                                            type="text"
+                                                                            autoFocus
+                                                                            value={presetNameInput}
+                                                                            onChange={e => setPresetNameInput(e.target.value)}
+                                                                            placeholder="给这个预设起个名字..."
+                                                                            className="flex-1 bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none"
+                                                                        />
+                                                                        <button onClick={confirmSavePreset} className="px-3 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-medium whitespace-nowrap hover:bg-blue-100">确认</button>
+                                                                        <button onClick={() => setIsSavingNewPreset(false)} className="px-3 py-2 bg-gray-50 text-gray-600 rounded-lg text-sm font-medium whitespace-nowrap hover:bg-gray-100">取消</button>
+                                                                    </div>
+                                                                ) : (
+                                                                    <>
+                                                                        <select
+                                                                            value={currentPresetId}
+                                                                            onChange={handlePresetChange}
+                                                                            className="flex-1 bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none cursor-pointer"
+                                                                        >
+                                                                            <option value="">当前配置 (未保存)</option>
+                                                                            {(config.apiPresets || []).map(p => (
+                                                                                <option key={p.id} value={p.id}>{p.name}</option>
+                                                                            ))}
+                                                                        </select>
+                                                                        <button
+                                                                            onClick={() => currentPresetId ? updatePreset() : setIsSavingNewPreset(true)}
+                                                                            className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm transition-colors whitespace-nowrap font-medium"
+                                                                        >
+                                                                            {currentPresetId ? '更新' : '保存'}
+                                                                        </button>
+                                                                        {currentPresetId && (
+                                                                            <button
+                                                                                onClick={deletePreset}
+                                                                                className="px-4 py-2 bg-red-50 hover:bg-red-100 text-red-600 rounded-lg text-sm transition-colors whitespace-nowrap font-medium"
+                                                                            >
+                                                                                删除
+                                                                            </button>
+                                                                        )}
+                                                                    </>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="border-t border-gray-100 pt-4"></div>
+
+                                                    <div className="space-y-4">
+                                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">主要 API 设置（用于聊天）</h3>
+                                                        
+                                                        {/* 温馨提示 */}
+                                                        <div className="bg-gray-100 text-gray-500 text-[10px] p-2.5 rounded-lg flex items-start gap-2 border border-gray-200/50">
+                                                            <p className="leading-relaxed">提示：要使用“发送图片”功能，请务必选择支持Vision(视觉)的模型，如 gpt-4o 或 gemini-1.5-flash。</p>
+                                                        </div>
+
+                                                        <div>
+                                                            <div className="flex justify-between mb-1">
+                                                                <label className="block text-[10px] text-gray-500 font-bold">API 协议标准</label>
+                                                            </div>
+                                                            <div className="flex gap-2">
+                                                                <button onClick={() => handleApiFieldChange('apiType', 'gemini')} className={`flex-1 py-2 text-sm rounded-lg border ${config.apiType === 'gemini' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>Gemini 原生</button>
+                                                                <button onClick={() => handleApiFieldChange('apiType', 'openai')} className={`flex-1 py-2 text-sm rounded-lg border ${config.apiType === 'openai' ? 'bg-green-50 border-green-500 text-green-700' : 'bg-white border-gray-200 text-gray-600'}`}>OpenAI 兼容</button>
+                                                            </div>
+                                                        </div>
+
+                                                        <div><label className="block text-[10px] text-gray-500 font-bold mb-1">代理 URL（无需 /v1~）</label><input type="text" value={config.baseUrl} onChange={(e) => handleApiFieldChange('baseUrl', e.target.value)} className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" /></div>
+                                                        
+                                                        <div><label className="block text-[10px] text-gray-500 font-bold mb-1">API 密钥</label><input type="password" value={config.apiKey} onChange={(e) => handleApiFieldChange('apiKey', e.target.value)} className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" /></div>
+                                                        
+                                                        <div>
+                                                            <label className="block text-[10px] text-gray-500 font-bold mb-1">模型</label>
+                                                            {availableModels.length > 0 ? (
+                                                                <select value={config.model} onChange={(e) => handleApiFieldChange('model', e.target.value)} className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none">{availableModels.map(m => <option key={m} value={m}>{m}</option>)}</select>
+                                                            ) : (
+                                                                <input type="text" value={config.model} onChange={(e) => handleApiFieldChange('model', e.target.value)} className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder="如 gemini-1.5-flash" />
+                                                            )}
+                                                        </div>
+
+                                                        <button onClick={fetchModels} disabled={isFetchingModels} className="w-full mt-2 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2 shadow-sm">
+                                                            <Icon name="RefreshCw" size={16} className={isFetchingModels ? "animate-spin" : ""} />
+                                                            {isFetchingModels ? '获取中...' : '获取主要模型'}
+                                                        </button>
+                                                    </div>
+
+                                                    <div className="border-t border-gray-100 pt-4"></div>
+
                                                     <div className="space-y-4">
                                                         <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">系统人设 (System Prompt)</h3>
                                                         <textarea 
-                                                            className="w-full h-32 bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:bg-white focus:border-blue-50 outline-none resize-none leading-relaxed" 
+                                                            className="w-full h-32 bg-gray-50 border border-gray-200 rounded-lg p-3 text-sm focus:bg-white focus:border-blue-500 outline-none resize-none leading-relaxed" 
                                                             placeholder="输入你希望 AI 扮演的角色，例如：你是一个温柔的男友..."
                                                             value={config.systemInstruction}
                                                             onChange={(e) => setConfig({...config, systemInstruction: e.target.value})}
@@ -1317,30 +1354,12 @@
                                                         <p className="text-[10px] text-gray-400">此指令会强制覆盖模型的默认性格。</p>
                                                     </div>
 
-                                                    <div className="border-t border-gray-100 pt-2"></div>
-
-                                                    <div className="space-y-4">
-                                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">模型选择</h3>
-                                                        <div className="flex flex-col md:flex-row items-start md:items-end gap-2">
-                                                            <div className="flex-1 w-full">
-                                                                <label className="block text-sm font-medium text-gray-700 mb-1">当前模型</label>
-                                                                {availableModels.length > 0 ? (
-                                                                    <select value={config.model} onChange={(e) => setConfig({...config, model: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none">{availableModels.map(m => <option key={m} value={m}>{m}</option>)}</select>
-                                                                ) : (
-                                                                    <input type="text" value={config.model} onChange={(e) => setConfig({...config, model: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder="如 gemini-1.5-flash" />
-                                                                )}
-                                                            </div>
-                                                            <button onClick={fetchModels} disabled={isFetchingModels} className="w-full md:w-auto px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-1 h-[38px] whitespace-nowrap"><Icon name="RefreshCw" size={14} className={isFetchingModels ? "animate-spin" : ""} />{isFetchingModels ? '获取中' : '获取列表'}</button>
-                                                        </div>
-                                                        <p className="text-xs text-gray-400">若地址以 /v1 结尾，系统会自动切换到 OpenAI 兼容模式获取。</p>
-                                                    </div>
-
                                                     <div className="border-t border-gray-100 pt-4"></div>
 
                                                     <div className="space-y-4">
                                                         <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">个性化</h3>
                                                         <div>
-                                                            <label className="block text-sm font-medium text-gray-700 mb-2">用户设置</label>
+                                                            <label className="block text-[10px] text-gray-500 font-bold mb-2">用户设置</label>
                                                             <div className="flex items-center gap-4 mb-2">
                                                                 <div className="w-12 h-12 rounded-full overflow-hidden bg-gray-100 border border-gray-200 flex-shrink-0">{config.userAvatar ? <img src={config.userAvatar} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-400 bg-gray-100"><Icon name="UserCircle" size={24} /></div>}</div>
                                                                 <button onClick={() => avatarInputRef.current.click()} className="px-3 py-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-md text-sm transition-colors">上传图片</button>
@@ -1353,7 +1372,7 @@
                                                             </div>
                                                         </div>
                                                         <div>
-                                                            <label className="block text-sm font-medium text-gray-700 mb-2">AI 设置</label>
+                                                            <label className="block text-[10px] text-gray-500 font-bold mb-2">AI 设置</label>
                                                             <div className="flex items-center gap-4 mb-2">
                                                                 <div className="w-12 h-12 rounded-full overflow-hidden bg-gray-100 border border-gray-200 flex-shrink-0">{config.aiAvatar ? <img src={config.aiAvatar} className="w-full h-full object-cover" /> : <div className="w-full h-full flex items-center justify-center text-gray-400 bg-gray-100"><Icon name="Bot" size={24} /></div>}</div>
                                                                 <button onClick={() => aiAvatarInputRef.current.click()} className="px-3 py-1.5 bg-white border border-gray-300 hover:bg-gray-50 text-gray-700 rounded-md text-sm transition-colors">上传图片</button>
@@ -1366,31 +1385,13 @@
                                                             </div>
                                                         </div>
                                                     </div>
-
-                                                    <div className="border-t border-gray-100 pt-4"></div>
-
-                                                    <div className="space-y-4">
-                                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">API 配置</h3>
-                                                        <div>
-                                                            <div className="flex justify-between mb-1">
-                                                                <label className="block text-sm font-medium text-gray-700">API 协议标准</label>
-                                                                <span className="text-xs text-gray-400 bg-gray-100 px-2 rounded-full">{config.apiType === 'openai' ? 'OpenAI兼容' : '原生'}</span>
-                                                            </div>
-                                                            <div className="flex gap-2">
-                                                                <button onClick={() => setConfig({...config, apiType: 'gemini'})} className={`flex-1 py-2 text-sm rounded-lg border ${config.apiType === 'gemini' ? 'bg-blue-50 border-blue-500 text-blue-700' : 'bg-white border-gray-200 text-gray-600'}`}>Gemini 原生</button>
-                                                                <button onClick={() => setConfig({...config, apiType: 'openai'})} className={`flex-1 py-2 text-sm rounded-lg border ${config.apiType === 'openai' ? 'bg-green-50 border-green-500 text-green-700' : 'bg-white border-gray-200 text-gray-600'}`}>OpenAI 兼容</button>
-                                                            </div>
-                                                        </div>
-                                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">API Base URL</label><input type="text" value={config.baseUrl} onChange={(e) => setConfig({...config, baseUrl: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" /></div>
-                                                        <div><label className="block text-sm font-medium text-gray-700 mb-1">API Key</label><input type="password" value={config.apiKey} onChange={(e) => setConfig({...config, apiKey: e.target.value})} className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" /></div>
-                                                    </div>
                                                     
                                                     <div className="border-t border-gray-100 pt-4"></div>
                                                     
                                                     <div className="space-y-4">
                                                          <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider">对话控制</h3>
                                                          <div>
-                                                            <label className="block text-sm font-medium text-gray-700 mb-1">短期记忆 (轮数): {config.historyLimit}</label>
+                                                            <label className="block text-[10px] text-gray-500 font-bold mb-1">短期记忆 (轮数): {config.historyLimit}</label>
                                                             <input type="range" min="5" max="50" step="1" value={config.historyLimit} onChange={(e) => setConfig({...config, historyLimit: e.target.value})} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"/>
                                                          </div>
                                                          
@@ -1406,11 +1407,11 @@
                                                          
                                                          <div className="flex flex-col md:flex-row gap-4 mt-2">
                                                             <div className="flex-1">
-                                                                <label className="block text-sm font-medium text-gray-700 mb-1">温度: {config.temperature}</label>
+                                                                <label className="block text-[10px] text-gray-500 font-bold mb-1">温度: {config.temperature}</label>
                                                                 <input type="range" min="0" max="2" step="0.1" value={config.temperature} onChange={(e) => setConfig({...config, temperature: e.target.value})} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"/>
                                                             </div>
                                                             <div className="flex-1">
-                                                                <label className="block text-sm font-medium text-gray-700 mb-1">重复惩罚: {config.frequencyPenalty}</label>
+                                                                <label className="block text-[10px] text-gray-500 font-bold mb-1">重复惩罚: {config.frequencyPenalty}</label>
                                                                 <input type="range" min="-2" max="2" step="0.1" value={config.frequencyPenalty} onChange={(e) => setConfig({...config, frequencyPenalty: e.target.value})} className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"/>
                                                             </div>
                                                         </div>
@@ -1448,16 +1449,16 @@
                                                                 <h4 className="text-sm font-semibold text-gray-800">内置高速秘密通道已激活</h4>
                                                                 <p className="text-xs text-gray-500 max-w-xs">已内置稳定合法的专属发声秘钥与代理路径，直接点击任意消息的【播放语音】即可听到温柔男声，无需任何繁琐配置。</p>
                                                                 <div className="w-full mt-2 text-left">
-                                                                    <label className="block text-xs font-medium text-gray-700 mb-1">语速: {config.siliconflowSpeed}</label>
+                                                                    <label className="block text-[10px] text-gray-500 font-bold mb-1">语速: {config.siliconflowSpeed}</label>
                                                                     <input type="range" min="0.5" max="2.0" step="0.1" value={config.siliconflowSpeed} onChange={(e) => setConfig({...config, siliconflowSpeed: e.target.value})} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-purple-600"/>
                                                                 </div>
                                                             </div>
                                                         ) : config.ttsEngine === 'openai' ? (
                                                             <div className="space-y-3 bg-green-50/50 p-3 rounded-xl border border-green-100">
-                                                                <div><label className="block text-sm font-medium text-gray-700 mb-1">OpenAI 语音 Key</label><input type="password" value={config.openaiTtsKey} onChange={(e) => setConfig({...config, openaiTtsKey: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-green-500 outline-none" placeholder="sk-..." /></div>
-                                                                <div><label className="block text-sm font-medium text-gray-700 mb-1">语音 Base URL</label><input type="text" value={config.openaiTtsUrl} onChange={(e) => setConfig({...config, openaiTtsUrl: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-green-500 outline-none" placeholder="默认: https://api.openai.com/v1" /></div>
+                                                                <div><label className="block text-[10px] text-gray-500 font-bold mb-1">OpenAI 语音 Key</label><input type="password" value={config.openaiTtsKey} onChange={(e) => setConfig({...config, openaiTtsKey: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-green-500 outline-none" placeholder="sk-..." /></div>
+                                                                <div><label className="block text-[10px] text-gray-500 font-bold mb-1">语音 Base URL</label><input type="text" value={config.openaiTtsUrl} onChange={(e) => setConfig({...config, openaiTtsUrl: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-green-500 outline-none" placeholder="默认: https://api.openai.com/v1" /></div>
                                                                 <div>
-                                                                    <label className="block text-sm font-medium text-gray-700 mb-1">声音选择</label>
+                                                                    <label className="block text-[10px] text-gray-500 font-bold mb-1">声音选择</label>
                                                                     <select className="w-full bg-white border border-gray-300 rounded-lg p-2 text-sm outline-none focus:border-green-500" value={config.openaiTtsVoice} onChange={(e) => setConfig({...config, openaiTtsVoice: e.target.value})}>
                                                                         <option value="alloy">Alloy (中性/爽朗男声)</option>
                                                                         <option value="echo">Echo (温柔/成熟男声-推荐)</option>
@@ -1470,24 +1471,23 @@
                                                             </div>
                                                         ) : (
                                                             <div className="space-y-3 bg-blue-50/50 p-3 rounded-xl border border-blue-100">
-                                                                <div><label className="block text-sm font-medium text-gray-700 mb-1">Minimax API Key</label><input type="password" value={config.minimaxKey} onChange={(e) => setConfig({...config, minimaxKey: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" /></div>
-                                                                <div><label className="block text-sm font-medium text-gray-700 mb-1">语音 Base URL</label><input type="text" value={config.minimaxUrl} onChange={(e) => setConfig({...config, minimaxUrl: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder="默认: https://api.minimaxi.com/v1/t2a_v2" /></div>
+                                                                <div><label className="block text-[10px] text-gray-500 font-bold mb-1">Minimax API Key</label><input type="password" value={config.minimaxKey} onChange={(e) => setConfig({...config, minimaxKey: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" /></div>
+                                                                <div><label className="block text-[10px] text-gray-500 font-bold mb-1">语音 Base URL</label><input type="text" value={config.minimaxUrl} onChange={(e) => setConfig({...config, minimaxUrl: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder="默认: https://api.minimaxi.com/v1/t2a_v2" /></div>
                                                                 <div>
-                                                                    <label className="block text-sm font-medium text-gray-700 mb-1">语音 ID</label>
+                                                                    <label className="block text-[10px] text-gray-500 font-bold mb-1">语音 ID</label>
                                                                     <div className="flex gap-2">
                                                                         <input type="text" value={config.minimaxVoiceId} onChange={(e) => setConfig({...config, minimaxVoiceId: e.target.value})} className="flex-1 bg-white border border-gray-300 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" />
                                                                         <select className="bg-gray-50 border border-gray-300 rounded-lg p-2 text-sm outline-none" onChange={(e) => setConfig({...config, minimaxVoiceId: e.target.value})} value={config.minimaxVoiceId}><option value="male-qn-qingse">青涩男声</option><option value="female-shaonv">少女音</option><option value="female-yujie">御姐音</option><option value="male-qn-jingying">精英男声</option></select>
                                                                     </div>
                                                                 </div>
-                                                                {/* --- 恢复的 Group ID --- */}
-                                                                <div><label className="block text-sm font-medium text-gray-700 mb-1">Group ID (如果有)</label><input type="text" value={config.minimaxGroupId} onChange={(e) => setConfig({...config, minimaxGroupId: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder="有些老账号需要填写" /></div>
+                                                                <div><label className="block text-[10px] text-gray-500 font-bold mb-1">Group ID (如果有)</label><input type="text" value={config.minimaxGroupId} onChange={(e) => setConfig({...config, minimaxGroupId: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm focus:border-blue-500 outline-none" placeholder="有些老账号需要填写" /></div>
                                                                 <div className="flex flex-col md:flex-row gap-4 mt-2">
                                                                     <div className="flex-1">
-                                                                        <label className="block text-xs font-medium text-gray-700 mb-1">语速: {config.minimaxSpeed}</label>
+                                                                        <label className="block text-[10px] text-gray-500 font-bold mb-1">语速: {config.minimaxSpeed}</label>
                                                                         <input type="range" min="0.5" max="2.0" step="0.1" value={config.minimaxSpeed} onChange={(e) => setConfig({...config, minimaxSpeed: e.target.value})} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"/>
                                                                     </div>
                                                                     <div className="flex-1">
-                                                                        <label className="block text-xs font-medium text-gray-700 mb-1">语调: {config.minimaxPitch}</label>
+                                                                        <label className="block text-[10px] text-gray-500 font-bold mb-1">语调: {config.minimaxPitch}</label>
                                                                         <input type="range" min="-10" max="10" step="1" value={config.minimaxPitch} onChange={(e) => setConfig({...config, minimaxPitch: e.target.value})} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"/>
                                                                     </div>
                                                                 </div>
