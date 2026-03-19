@@ -124,6 +124,10 @@
 
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
+        // ================= 版本号控制 =================
+        const UPDATE_VERSION = "v5.1"; 
+        // ============================================
+
         function App() {
             const [input, setInput] = useState('');
             const [messages, setMessages] = useState([]);
@@ -152,6 +156,9 @@
             const [currentPresetId, setCurrentPresetId] = useState('');
             const [presetNameInput, setPresetNameInput] = useState('');
             const [isSavingNewPreset, setIsSavingNewPreset] = useState(false);
+
+            // 更新公告弹窗状态
+            const [showUpdateModal, setShowUpdateModal] = useState(false);
 
             const [config, setConfig] = useState({
                 apiKey: '',
@@ -201,6 +208,12 @@
             const backupInputRef = useRef(null); 
 
             useEffect(() => {
+                // 检查版本更新弹窗
+                const lastSeenUpdate = localStorage.getItem('xingyue_update_seen');
+                if (lastSeenUpdate !== UPDATE_VERSION) {
+                    setShowUpdateModal(true);
+                }
+
                 const storedConfig = localStorage.getItem('gemini_app_config');
                 if (storedConfig) {
                     const parsed = JSON.parse(storedConfig);
@@ -249,7 +262,6 @@
                     if (config.apiKey) localStorage.setItem('gemini_app_config', JSON.stringify(config));
                     if (config.baseUrl && config.baseUrl.includes('/v1') && config.apiType !== 'openai' && !config.baseUrl.includes('googleapis.com')) {
                         setConfig(prev => ({...prev, apiType: 'openai'}));
-                        showToast("检测到 /v1 路径，已自动切换为 OpenAI 兼容模式");
                     }
                     localStorage.setItem('gemini_memories', JSON.stringify(memoryFiles));
                     localStorage.setItem('gemini_health_records', JSON.stringify(healthRecords));
@@ -281,7 +293,6 @@
                 }
             }, [messages, currentSessionId]);
 
-            // [修复1] 捕获历史会话保存到 LocalStorage 时的容量超限报错
             useEffect(() => {
                 try {
                     localStorage.setItem('gemini_chat_sessions', JSON.stringify(historySessions));
@@ -294,6 +305,11 @@
             useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isLoading]);
 
             const showToast = (msg, duration=3000) => { setToast(msg); setTimeout(() => setToast(null), duration); };
+
+            const closeUpdateModal = () => {
+                setShowUpdateModal(false);
+                localStorage.setItem('xingyue_update_seen', UPDATE_VERSION);
+            };
 
             const handleApiFieldChange = (field, value) => {
                 setConfig(prev => ({ ...prev, [field]: value }));
@@ -391,7 +407,7 @@
                                         className="w-full bg-pink-50 border border-pink-100 rounded-lg p-2 text-xs focus:outline-none focus:border-pink-300 mb-3 text-pink-600 font-medium placeholder:text-pink-300" 
                                         value={editAnniversary} 
                                         onChange={e => setEditAnniversary(e.target.value)} 
-                                        placeholder="比如：user的生日、相识纪念日..."
+                                        placeholder="比如：相识纪念日、用户的生日..."
                                     />
 
                                     <label className="block text-[10px] text-gray-500 mb-1 font-medium">当天的身体状态</label>
@@ -412,7 +428,7 @@
                                             setConfig(newConfig);
                                             
                                             setEditingDate(null); 
-                                            showToast("日历已悄悄记下啦"); 
+                                            showToast("日历已记录"); 
                                         }} className="flex-1 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 transition-colors">保存</button>
                                     </div>
                                 </div>
@@ -618,10 +634,9 @@
 
             const removeFile = (index, type) => { if (type === 'memory') setMemoryFiles(prev => prev.filter((_, i) => i !== index)); };
 
-            // [修复2] 备份与还原时加入 HealthRecords 的完整支持
             const handleCreateBackup = () => {
                 const backupData = { 
-                    version: '4.98', 
+                    version: UPDATE_VERSION, 
                     timestamp: new Date().toISOString(), 
                     config: config, 
                     memories: memoryFiles, 
@@ -699,7 +714,7 @@
                 if (!config.apiKey) { setError('请先配置 API Key'); return; }
                 setIsArchiving(true); showToast("正在生成记忆摘要...");
                 try {
-                    const summaryPrompt = "请阅读以上所有对话。请以第一人称视角（我），称用户（user）为“她”，总结这次对话中的关键信息。重点关注：1. 用户提到的新的个人喜好、习惯、生活状态。 2. 双方达成的新的重要共识或约定。 3. 用户的情感状态。 请输出为一段简洁的文本，作为“长期记忆”存档。不要包含寒暄。尽量客观，可附自己的总结经验。尽量简练";
+                    const summaryPrompt = `请阅读以上所有对话。请以第一人称视角（我），总结这次对话中的关键信息。重点关注：1. 用户(${config.userName || '用户'})提到的新的个人喜好、习惯、生活状态。 2. 双方达成的新的重要共识或约定。 3. 用户的情感状态。 请输出为一段简洁的文本，作为“长期记忆”存档。不要包含寒暄。尽量客观，可附自己的总结经验。尽量简练`;
                     let payload, url, headers; const baseUrl = config.baseUrl.replace(/\/$/, ''); const modelName = config.model || 'gemini-1.5-flash';
                     if (config.apiType === 'openai') {
                         url = `${baseUrl}/chat/completions`; headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
@@ -757,12 +772,12 @@
                 
                 const todayStr = new Date().toISOString().split('T')[0];
                 const monthDayStr = todayStr.substring(5);
-                const healthStatus = healthRecords[todayStr] ? `user今天的身体状态是：${healthRecords[todayStr]}` : "目前身体很健康。";
-                let healthPrompt = `\n\n【身体足迹：${healthStatus}】\n若感知到她身体不适或康复，请在回复的最末尾附加隐藏标记 «HEALTH: 状态描述»，不要在正文中复述这句话。`;
+                const healthStatus = healthRecords[todayStr] ? `${config.userName || '用户'}今天的身体状态是：${healthRecords[todayStr]}` : "目前身体很健康。";
+                let healthPrompt = `\n\n【身体足迹：${healthStatus}】\n若感知到用户身体不适或康复，请在回复的最末尾附加隐藏标记 «HEALTH: 状态描述»，不要在正文中复述这句话。`;
                 
                 const todayAnniversary = config.anniversaries?.[monthDayStr];
                 if (todayAnniversary) {
-                    healthPrompt += `\n【温馨提示：今天是 ${todayAnniversary} ！！】请在对话中自然、温柔地带出节日的祝福或关心，给她一点小惊喜。`;
+                    healthPrompt += `\n【温馨提示：今天是 ${todayAnniversary} ！！】请在对话中自然、温柔地带出节日的祝福或关心，给点小惊喜。`;
                 }
 
                 const fullSystemInstruction = finalSystemPrompt + memoryStr + timePrompt + healthPrompt;
@@ -1012,6 +1027,39 @@
                 <div className="flex h-screen bg-white text-gray-900 font-sans overflow-hidden">
                     {toast && <div className="fixed top-4 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white px-4 py-2 rounded-full text-sm shadow-lg z-50 animate-fade-in flex items-center gap-2"><Icon name="Sparkles" size={16} className="text-yellow-400"/> {toast}</div>}
 
+                    {/* ===== 更新公告弹窗 ===== */}
+                    {showUpdateModal && (
+                        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[100] backdrop-blur-sm animate-fade-in px-4">
+                            <div className="bg-white w-full max-w-sm rounded-[24px] shadow-2xl overflow-hidden flex flex-col animate-scale-in">
+                                <div className="bg-gradient-to-r from-blue-500 to-purple-500 p-6 text-center relative">
+                                    <div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center mx-auto mb-2 backdrop-blur-md">
+                                        <Icon name="Sparkles" className="text-white" size={24} />
+                                    </div>
+                                    <h2 className="text-xl font-bold text-white tracking-wider">全面升级啦 ✨</h2>
+                                    <p className="text-blue-100 text-xs mt-1 font-medium">{UPDATE_VERSION}</p>
+                                </div>
+                                <div className="p-6 space-y-4 text-sm text-gray-600 leading-relaxed max-h-[50vh] overflow-y-auto no-scrollbar">
+                                    <div className="space-y-2">
+                                        <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
+                                        <ul className="list-disc pl-4 space-y-1">
+                                            <li>全面升级至 {UPDATE_VERSION} 版本。</li>
+                                            <li>新增「API预设管理」，随时随地一键切换不同大模型。</li>
+                                            <li>健康状态与专属纪念日日历，温暖守护每一天。</li>
+                                            <li>全量数据本地加密存储，支持多设备无缝导入导出。</li>
+                                        </ul>
+                                    </div>
+                                    <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
+                                        <p className="font-bold text-sm">✨ 欢迎来到逸辰和柒柒的星月舱，感谢大家的支持！</p>
+                                        <p className="text-[10px] text-gray-500">⚠️ 本站不支持二改、商用，有问题请联系 12155229@qq.com</p>
+                                    </div>
+                                </div>
+                                <div className="p-4 border-t border-gray-50 bg-gray-50">
+                                    <button onClick={closeUpdateModal} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-lg shadow-blue-200 transition-all active:scale-95">开始体验</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     {/* --- 数据导入合并弹窗 --- */}
                     {pendingBackup && (
                         <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] backdrop-blur-sm animate-fade-in px-4">
@@ -1103,7 +1151,7 @@
                             <div className="flex items-center gap-3">
                                 <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-600"><Icon name="Menu" size={20} /></button>
                                 <div className="flex flex-col">
-                                    <span className="text-lg font-medium text-gray-800 tracking-tight leading-tight">✨星月舱v5.1 🌙💫 守护版</span>
+                                    <span className="text-lg font-medium text-gray-800 tracking-tight leading-tight">✨星月舱{UPDATE_VERSION} 🌙💫 守护版</span>
                                     <span className="text-[10px] text-gray-400 leading-tight">模型: {config.model} | 记忆: {memoryFiles.length} | 模式: {config.apiType === 'openai' ? 'OpenAI兼容' : '原生'}</span>
                                 </div>
                             </div>
@@ -1127,7 +1175,7 @@
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex items-center gap-2 mb-1 flex-wrap">
                                                         <span className="font-semibold text-sm text-gray-800">
-                                                            {msg.role === 'user' ? (config.userName || '你') : (config.aiName || '星月舱 AI')}
+                                                            {msg.role === 'user' ? (config.userName || '用户') : (config.aiName || '星月舱 AI')}
                                                         </span>
                                                         {msg.role === 'model' && msg.modelName && (
                                                             <span className="px-1.5 py-0.5 rounded text-[9px] bg-purple-50 text-purple-600 border border-purple-100 font-mono tracking-tight">
@@ -1215,7 +1263,7 @@
                                     <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="星月交辉✨......" className="bg-transparent border-0 focus:ring-0 text-gray-800 flex-1 resize-none py-3 max-h-32 min-h-[44px] outline-none placeholder:text-gray-400 text-base" rows={1}></textarea>
                                     {(input.trim() || attachment) ? <button onClick={handleSend} disabled={isLoading} className="mb-1 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors shadow-sm"><Icon name="Send" size={18} /></button> : <button className="mb-1 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-colors"><Icon name="Mic" size={20} /></button>}
                                 </div>
-                                <div className="text-center mt-2 text-[10px] text-gray-400">API大模型 可能会产生不准确的信息。</div>
+                                <div className="text-center mt-2 text-[10px] text-gray-400">大语言模型可能会产生不准确的信息。</div>
                             </div>
                         </div>
 
