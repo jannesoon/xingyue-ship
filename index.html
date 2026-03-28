@@ -152,6 +152,9 @@
             const [healthModalOpen, setHealthModalOpen] = useState(false);
             const [healthRecords, setHealthRecords] = useState({});
 
+            const [editingMessageIndex, setEditingMessageIndex] = useState(null);
+            const [editingMessageContent, setEditingMessageContent] = useState('');
+
             // API预设管理状态
             const [currentPresetId, setCurrentPresetId] = useState('');
             const [presetNameInput, setPresetNameInput] = useState('');
@@ -852,6 +855,105 @@
                 return text;
             };
 
+            const copyToClipboard = (text) => {
+                const textArea = document.createElement("textarea");
+                textArea.value = text;
+                textArea.style.top = "0"; textArea.style.left = "0"; textArea.style.position = "fixed";
+                document.body.appendChild(textArea); textArea.focus(); textArea.select();
+                try { document.execCommand('copy'); showToast('已复制'); } catch (err) { console.error('复制失败', err); }
+                document.body.removeChild(textArea);
+            };
+
+            const startEditingUserMessage = (index) => {
+                let text = messages[index].content;
+                text = text.replace(/!\[Image\]\(data:image\/.*?;base64,.*?\)/g, '');
+                text = text.replace(/<details class="normal-details">[\s\S]*?<\/details>/g, '');
+                text = text.replace(/\(系统提示: 上方是自动抓取的网页内容，请基于此回复我\)/g, '');
+                setEditingMessageIndex(index);
+                setEditingMessageContent(text.trim());
+            };
+
+            const submitEditedMessage = async (index) => {
+                if (!editingMessageContent.trim()) {
+                    setEditingMessageIndex(null);
+                    return;
+                }
+                // 截断消息列表，回到这句修改的话的位置
+                const newHistory = messages.slice(0, index);
+                const editedMsg = { role: 'user', content: editingMessageContent, timestamp: getTimestamp(), timestampRaw: Date.now() };
+                newHistory.push(editedMsg);
+                
+                setMessages(newHistory);
+                setEditingMessageIndex(null);
+                setIsLoading(true); setError(null);
+
+                try {
+                    const { url, headers, payload } = generatePayload(newHistory, false);
+                    let endpointUrl = url;
+                    if (config.streamOutput && config.apiType !== 'openai') endpointUrl = endpointUrl.replace(':generateContent', ':streamGenerateContent') + '&alt=sse';
+
+                    const response = await fetch(endpointUrl, { method: 'POST', headers, body: JSON.stringify(payload) });
+                    if (!response.ok) { const errData = await response.json().catch(() => ({})); throw new Error(errData.error?.message || `HTTP ${response.status}`); }
+                    
+                    if (!config.streamOutput) {
+                        const data = await response.json();
+                        let aiText = ''; let reasoningText = '';
+                        if (config.apiType === 'openai') {
+                            const messageObj = data.choices?.[0]?.message; aiText = messageObj?.content || ""; reasoningText = messageObj?.reasoning_content || "";
+                        } else { aiText = data.candidates?.[0]?.content?.parts?.[0]?.text || ""; }
+                        const thinkMatch = aiText.match(/<think>([\s\S]*?)<\/think>/);
+                        if (thinkMatch) { reasoningText = thinkMatch[1].trim() + (reasoningText ? '\n' + reasoningText : ''); aiText = aiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
+                        if (!aiText && !reasoningText) aiText = "无回复";
+                        aiText = processHealthTag(aiText);
+                        setMessages(prev => [...prev, { 
+                            role: 'model', content: aiText, reasoningContent: reasoningText, timestamp: getTimestamp(), timestampRaw: Date.now(), modelName: config.model,
+                            variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
+                        }]);
+                        setIsLoading(false);
+                    } else {
+                        setIsLoading(false);
+                        const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8"); let aiText = ""; let reasoningText = "";
+                        setMessages(prev => [...prev, { 
+                            role: 'model', content: '', reasoningContent: '', timestamp: getTimestamp(), timestampRaw: Date.now(), modelName: config.model,
+                            variants: [{ content: '', reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
+                        }]);
+                        let buffer = "";
+                        while (true) {
+                            const { done, value } = await reader.read(); if (done) break;
+                            buffer += decoder.decode(value, { stream: true }); let lines = buffer.split('\n'); buffer = lines.pop();
+                            for (let line of lines) {
+                                line = line.trim();
+                                if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                                    try {
+                                        const data = JSON.parse(line.substring(6));
+                                        if (config.apiType === 'openai') {
+                                            const delta = data.choices?.[0]?.delta; if (delta?.reasoning_content) reasoningText += delta.reasoning_content; if (delta?.content) aiText += delta.content;
+                                        } else { aiText += data.candidates?.[0]?.content?.parts?.[0]?.text || ""; }
+                                        let displayReasoning = reasoningText; let displayContent = aiText;
+                                        const thinkMatch = aiText.match(/<think>([\s\S]*?)(<\/think>|$)/);
+                                        if (thinkMatch) { displayReasoning = (reasoningText ? reasoningText + '\n' : '') + thinkMatch[1].trim(); displayContent = aiText.replace(/<think>[\s\S]*?(<\/think>|$)/, '').trim(); }
+                                        displayContent = processHealthTag(displayContent);
+                                        setMessages(prev => { 
+                                            const newMsgs = [...prev]; const lastMsg = newMsgs[newMsgs.length - 1];
+                                            lastMsg.content = displayContent; lastMsg.reasoningContent = displayReasoning;
+                                            lastMsg.variants[0].content = displayContent; lastMsg.variants[0].reasoningContent = displayReasoning;
+                                            return newMsgs; 
+                                        });
+                                    } catch (e) {}
+                                }
+                            }
+                        }
+                    }
+                } catch (err) { 
+                    setError(err.message); 
+                    setMessages(prev => [...prev, { 
+                        role: 'model', content: `错误: ${err.message}`, timestamp: getTimestamp(), modelName: config.model,
+                        variants: [{ content: `错误: ${err.message}`, reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
+                    }]); 
+                    setIsLoading(false); 
+                }
+            };
+
             const handleRegenerate = async () => {
                 if (isLoading || messages.length === 0) return;
                 let newMessages = [...messages];
@@ -1181,7 +1283,7 @@
                                             <div key={index} className="flex gap-4 animate-fade-in group">
                                                 <Avatar role={msg.role} config={config} />
                                                 <div className="flex-1 min-w-0">
-                                                    <div className="flex items-center gap-2 mb-1 flex-wrap">
+                                                    <div className="flex items-center gap-2 mb-1 flex-wrap w-full">
                                                         <span className="font-semibold text-sm text-gray-800">
                                                             {msg.role === 'user' ? (config.userName || '用户') : (config.aiName || '星月舱 AI')}
                                                         </span>
@@ -1198,9 +1300,21 @@
                                                                 <button onClick={() => switchVariant(index, 1)} disabled={msg.currentVariantIndex === msg.variants.length - 1} className="text-gray-400 hover:text-blue-600 disabled:opacity-30 transition-colors"><Icon name="ChevronRight" size={12} /></button>
                                                             </div>
                                                         )}
-                                                        <span className="text-[10px] text-gray-400 font-mono ml-auto">
-                                                            {msg.timestamp || ''}
-                                                        </span>
+                                                        
+                                                        <div className="flex items-center gap-2 ml-auto">
+                                                            {msg.role === 'user' && (
+                                                                <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                    <button onClick={() => { 
+                                                                        const copyText = msg.content.replace(/!\[Image\]\(data:image\/.*?;base64,.*?\)/g, '[图片]').replace(/<details class="normal-details">[\s\S]*?<\/details>/g, '');
+                                                                        copyToClipboard(copyText);
+                                                                    }} className="text-gray-400 hover:text-blue-500" title="复制文本"><Icon name="FileText" size={12}/></button>
+                                                                    <button onClick={() => startEditingUserMessage(index)} className="text-gray-400 hover:text-blue-500" title="编辑并重新发送"><Icon name="Edit" size={12}/></button>
+                                                                </div>
+                                                            )}
+                                                            <span className="text-[10px] text-gray-400 font-mono">
+                                                                {msg.timestamp || ''}
+                                                            </span>
+                                                        </div>
                                                     </div>
                                                     
                                                     {msg.reasoningContent && (
@@ -1215,7 +1329,22 @@
                                                         </details>
                                                     )}
 
-                                                    {msg.content && <MessageContent content={msg.content} />}
+                                                    {editingMessageIndex === index ? (
+                                                        <div className="mt-2 flex flex-col gap-2 w-full animate-fade-in">
+                                                            <textarea 
+                                                                className="w-full bg-blue-50/50 border border-blue-200 rounded-lg p-3 text-sm focus:bg-white focus:border-blue-400 outline-none resize-none min-h-[80px]" 
+                                                                value={editingMessageContent}
+                                                                onChange={(e) => setEditingMessageContent(e.target.value)}
+                                                                autoFocus
+                                                            ></textarea>
+                                                            <div className="flex justify-end gap-2">
+                                                                <button onClick={() => setEditingMessageIndex(null)} className="px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-100 rounded-lg transition-colors">取消</button>
+                                                                <button onClick={() => submitEditedMessage(index)} className="px-3 py-1.5 text-xs bg-blue-600 text-white hover:bg-blue-700 rounded-lg shadow-sm transition-colors flex items-center gap-1"><Icon name="Send" size={12}/> 保存并发送</button>
+                                                            </div>
+                                                        </div>
+                                                    ) : (
+                                                        msg.content && <MessageContent content={msg.content} />
+                                                    )}
 
                                                     {msg.role === 'model' && (
                                                         <div className="mt-2 flex items-center gap-2">
