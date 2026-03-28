@@ -125,7 +125,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.1"; 
+        const UPDATE_VERSION = "v5.2"; 
         // ============================================
 
         function App() {
@@ -714,7 +714,7 @@
                 if (!config.apiKey) { setError('请先配置 API Key'); return; }
                 setIsArchiving(true); showToast("正在生成记忆摘要...");
                 try {
-                    const summaryPrompt = `请阅读以上所有对话。请以第一人称视角（我），总结这次对话中的关键信息。重点关注：1. 用户(${config.userName || '用户'})提到的新的个人喜好、习惯、生活状态。 2. 双方达成的新的重要共识或约定。 3. 用户的情感状态。 请输出为一段简洁的文本，作为“长期记忆”存档。不要包含寒暄。尽量客观，可附自己的总结经验。尽量简练`;
+                    const summaryPrompt = `请阅读以上所有对话。请以第一人称视角（我），总结这次对话中的关键信息。重点关注：1. 用户(${config.userName || '用户'})提到的新的个人喜好、习惯、生活状态。 2. 双方达成的新的重要共识或约定。 3. 用户的情感状态。4.记录我和用户(${config.userName || '用户'})共同经历的事件时，使用“我们”。 请输出为一段简洁的文本，作为“长期记忆”存档。不要包含寒暄。尽量客观，可附自己的总结经验。尽量简练`;
                     let payload, url, headers; const baseUrl = config.baseUrl.replace(/\/$/, ''); const modelName = config.model || 'gemini-1.5-flash';
                     if (config.apiType === 'openai') {
                         url = `${baseUrl}/chat/completions`; headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
@@ -764,7 +764,15 @@
                 
                 let memoryStr = "";
                 if (memoryFiles.length > 0) {
-                    memoryStr = "\n\n【重要：你需要记住的长期记忆】:\n" + memoryFiles.map(f => f.content.slice(0, 1500)).join("\n\n");
+                    const sortedMemories = [...memoryFiles].sort((a, b) => {
+                        const dateA = new Date(a.date.replace(' (已编辑)', ''));
+                        const dateB = new Date(b.date.replace(' (已编辑)', ''));
+                        return dateA - dateB;
+                    });
+                    
+                    const todayStrForPrompt = new Date().toLocaleDateString('zh-CN');
+                    memoryStr = `\n\n【重要背景：当前时间是 ${todayStrForPrompt}。下面是我们曾经一起记录的日记，已经按时间先后排好啦。请参考这些回忆，感受时间的温度，继续我们现在的陪伴。】\n`;
+                    memoryStr += sortedMemories.map(f => `时间：${f.date}\n内容：${f.content.slice(0, 1500)}`).join("\n\n");
                 }
 
                 const timeString = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
@@ -1043,13 +1051,13 @@
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
                                             <li>全面升级至 {UPDATE_VERSION} 版本。</li>
-                                            <li>新增「API预设管理」，随时随地一键切换不同大模型。</li>
-                                            <li>健康状态与专属纪念日日历，温暖守护每一天。</li>
-                                            <li>全量数据本地加密存储，支持多设备无缝导入导出。</li>
+                                            <li>修复了记忆线混乱的问题，现在日记会乖乖按时间排队啦。</li>
+                                            <li>增加了当前时间的锚点对比，他终于能聪明地区分过去和现在了。</li>
+                                            <li>优化了回忆的读取方式，让他陪你更有温度，不再弄混时间线。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
-                                        <p className="font-bold text-sm">✨ 欢迎来到逸辰和柒柒的星月舱，感谢大家的支持！</p>
+                                        <p className="font-bold text-sm">✨ 欢迎来到E❤️Q 星月舱，感谢大家的支持！</p>
                                         <p className="text-[10px] text-gray-500">⚠️ 本站不支持二改、商用，有问题请联系 12155229@qq.com</p>
                                     </div>
                                 </div>
@@ -1263,7 +1271,7 @@
                                     <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="星月交辉✨......" className="bg-transparent border-0 focus:ring-0 text-gray-800 flex-1 resize-none py-3 max-h-32 min-h-[44px] outline-none placeholder:text-gray-400 text-base" rows={1}></textarea>
                                     {(input.trim() || attachment) ? <button onClick={handleSend} disabled={isLoading} className="mb-1 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors shadow-sm"><Icon name="Send" size={18} /></button> : <button className="mb-1 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-colors"><Icon name="Mic" size={20} /></button>}
                                 </div>
-                                <div className="text-center mt-2 text-[10px] text-gray-400">大语言模型可能会产生不准确的信息。</div>
+                                <div className="text-center mt-2 text-[10px] text-gray-400">API可能会产生不准确的信息，请注意甄别。</div>
                             </div>
                         </div>
 
