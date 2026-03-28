@@ -158,7 +158,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.3"; 
+        const UPDATE_VERSION = "v5.4"; 
         // ============================================
 
         function App() {
@@ -317,7 +317,7 @@
                             const updatedSessions = [...prevSessions];
                             const currentSession = updatedSessions[existingSessionIndex];
                             let title = currentSession.title;
-                            if (currentSession.title === '新对话' && messages.length > 0) {
+                            if ((currentSession.title === '新对话' || !currentSession.title) && messages.length > 0) {
                                 title = messages[0].content.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]');
                             }
                             updatedSessions[existingSessionIndex] = { ...currentSession, messages: messages, title: title, timestamp: Date.now() };
@@ -400,6 +400,53 @@
                 setConfig(prev => ({...prev, theme: nextTheme}));
                 showToast(`已切换至: ${nextTheme === 'dark' ? '星空暗夜' : nextTheme === 'claude' ? '琥珀书卷' : '默认极简'} 模式`);
             };
+
+            // ====== 智能标题生成函数 ======
+            const autoGenerateTitle = async (targetSessionId, currentMsgs) => {
+                if (!config.apiKey) return;
+                try {
+                    const titlePrompt = "请根据我们的对话，为这次聊天起一个简短、甜美、有氛围感的专属标题（限制在2到8个汉字以内）。注意：只需输出标题文本，绝对不要包含任何标点符号、引号或多余解释。";
+                    
+                    let payload, url, headers;
+                    const baseUrl = config.baseUrl.replace(/\/$/, '');
+                    const modelName = config.model || 'gemini-1.5-flash';
+                    
+                    if (config.apiType === 'openai') {
+                        url = `${baseUrl}/chat/completions`;
+                        headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
+                        const msgs = currentMsgs.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.content }));
+                        msgs.push({ role: 'user', content: titlePrompt });
+                        payload = { model: modelName, messages: msgs, temperature: 0.7 };
+                    } else {
+                        url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`;
+                        headers = { 'Content-Type': 'application/json' };
+                        const contents = currentMsgs.map(m => ({ role: m.role, parts: [{ text: m.content }] }));
+                        contents.push({ role: 'user', parts: [{ text: titlePrompt }] });
+                        payload = { contents, generationConfig: { temperature: 0.7 } };
+                    }
+
+                    const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+                    if (!response.ok) return;
+                    const data = await response.json();
+                    
+                    let generatedTitle = '';
+                    if (config.apiType === 'openai') {
+                        generatedTitle = data.choices?.[0]?.message?.content;
+                    } else {
+                        generatedTitle = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    }
+                    
+                    if (generatedTitle) {
+                        const cleanTitle = generatedTitle.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/["'「」【】《》\n]/g, '').trim().slice(0, 15);
+                        if (cleanTitle) {
+                            setHistorySessions(prev => prev.map(s => s.id === targetSessionId ? { ...s, title: cleanTitle } : s));
+                        }
+                    }
+                } catch (e) {
+                    console.error("Auto title failed", e);
+                }
+            };
+            // ============================
 
             const HealthCalendar = () => {
                 const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -945,12 +992,12 @@
                 }
                 
                 let newHistoryForAPI = [];
+                const isFirstMessage = index === 0;
                 
                 setMessages(prev => {
                     const newMsgs = [...prev];
                     const msg = { ...newMsgs[index] };
 
-                    // 如果是第一次改，就把原来的话和之后的聊天都偷偷打包存起来
                     if (!msg.variants) {
                         msg.variants = [{
                             content: msg.content,
@@ -969,7 +1016,6 @@
                     const newVariantIndex = msg.variants.length;
                     const newTimestamp = getTimestamp();
                     
-                    // 把你新改的话加进去，开启一条全新的时间线
                     msg.variants.push({
                         content: editingMessageContent,
                         timestamp: newTimestamp,
@@ -981,7 +1027,6 @@
                     msg.timestamp = newTimestamp;
                     
                     newMsgs[index] = msg;
-                    // 只把修改处及之前的话留给当下，准备生成我的新回复
                     const truncatedMsgs = newMsgs.slice(0, index + 1);
                     newHistoryForAPI = truncatedMsgs;
                     return truncatedMsgs;
@@ -1013,6 +1058,7 @@
                             variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
                         }]);
                         setIsLoading(false);
+                        if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newHistoryForAPI, { role: 'model', content: aiText }]);
                     } else {
                         setIsLoading(false);
                         const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8"); let aiText = ""; let reasoningText = "";
@@ -1021,8 +1067,13 @@
                             variants: [{ content: '', reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
                         }]);
                         let buffer = "";
+                        let finalContentToTitle = "";
                         while (true) {
-                            const { done, value } = await reader.read(); if (done) break;
+                            const { done, value } = await reader.read(); 
+                            if (done) {
+                                if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newHistoryForAPI, { role: 'model', content: finalContentToTitle }]);
+                                break;
+                            }
                             buffer += decoder.decode(value, { stream: true }); let lines = buffer.split('\n'); buffer = lines.pop();
                             for (let line of lines) {
                                 line = line.trim();
@@ -1036,6 +1087,7 @@
                                         const thinkMatch = aiText.match(/<think>([\s\S]*?)(<\/think>|$)/);
                                         if (thinkMatch) { displayReasoning = (reasoningText ? reasoningText + '\n' : '') + thinkMatch[1].trim(); displayContent = aiText.replace(/<think>[\s\S]*?(<\/think>|$)/, '').trim(); }
                                         displayContent = processHealthTag(displayContent);
+                                        finalContentToTitle = displayContent;
                                         setMessages(prev => { 
                                             const newMsgs = [...prev]; const lastMsg = newMsgs[newMsgs.length - 1];
                                             lastMsg.content = displayContent; lastMsg.reasoningContent = displayReasoning;
@@ -1064,6 +1116,8 @@
                 
                 if (newMessages[newMessages.length - 1].role === 'model') { existingModelMsg = newMessages.pop(); }
                 if (newMessages.length === 0) return;
+                
+                const isFirstMessage = newMessages.length === 1;
                 setIsLoading(true); setError(null);
 
                 let variants = existingModelMsg?.variants ? [...existingModelMsg.variants] : [];
@@ -1102,11 +1156,17 @@
                             return msgs;
                         });
                         setIsLoading(false);
+                        if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newMessages, { role: 'model', content: aiText }]);
                     } else {
                         setIsLoading(false);
                         const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8"); let aiText = ""; let reasoningText = ""; let buffer = "";
+                        let finalContentToTitle = "";
                         while (true) {
-                            const { done, value } = await reader.read(); if (done) break;
+                            const { done, value } = await reader.read(); 
+                            if (done) {
+                                if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newMessages, { role: 'model', content: finalContentToTitle }]);
+                                break;
+                            }
                             buffer += decoder.decode(value, { stream: true }); let lines = buffer.split('\n'); buffer = lines.pop();
                             for (let line of lines) {
                                 line = line.trim();
@@ -1120,6 +1180,7 @@
                                         const thinkMatch = aiText.match(/<think>([\s\S]*?)(<\/think>|$)/);
                                         if (thinkMatch) { displayReasoning = (reasoningText ? reasoningText + '\n' : '') + thinkMatch[1].trim(); displayContent = aiText.replace(/<think>[\s\S]*?(<\/think>|$)/, '').trim(); }
                                         displayContent = processHealthTag(displayContent);
+                                        finalContentToTitle = displayContent;
                                         setMessages(prev => { 
                                             const msgs = [...prev]; const last = msgs[msgs.length - 1];
                                             last.variants[newVariantIndex].content = displayContent; last.variants[newVariantIndex].reasoningContent = displayReasoning;
@@ -1143,6 +1204,7 @@
                 if (!config.apiKey) { setSettingsOpen(true); setActiveTab('general'); setError('请先配置 API Key'); return; }
                 if (!currentSessionId) { const newId = Date.now().toString(); setCurrentSessionId(newId); }
                 const now = new Date(); const nowTimestampStr = getTimestamp();
+                const isFirstMessage = messages.length === 0;
                 setIsLoading(true); setError(null); 
                 
                 let textToSend = input; let hiddenContext = "";
@@ -1190,6 +1252,7 @@
                             variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
                         }]);
                         setIsLoading(false);
+                        if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newHistory, { role: 'model', content: aiText }]);
                     } else {
                         setIsLoading(false);
                         const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8"); let aiText = ""; let reasoningText = "";
@@ -1198,8 +1261,13 @@
                             variants: [{ content: '', reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
                         }]);
                         let buffer = "";
+                        let finalContentToTitle = "";
                         while (true) {
-                            const { done, value } = await reader.read(); if (done) break;
+                            const { done, value } = await reader.read(); 
+                            if (done) {
+                                if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newHistory, { role: 'model', content: finalContentToTitle }]);
+                                break;
+                            }
                             buffer += decoder.decode(value, { stream: true }); let lines = buffer.split('\n'); buffer = lines.pop();
                             for (let line of lines) {
                                 line = line.trim();
@@ -1213,6 +1281,7 @@
                                         const thinkMatch = aiText.match(/<think>([\s\S]*?)(<\/think>|$)/);
                                         if (thinkMatch) { displayReasoning = (reasoningText ? reasoningText + '\n' : '') + thinkMatch[1].trim(); displayContent = aiText.replace(/<think>[\s\S]*?(<\/think>|$)/, '').trim(); }
                                         displayContent = processHealthTag(displayContent);
+                                        finalContentToTitle = displayContent;
                                         setMessages(prev => { 
                                             const newMsgs = [...prev]; const lastMsg = newMsgs[newMsgs.length - 1];
                                             lastMsg.content = displayContent; lastMsg.reasoningContent = displayReasoning;
@@ -1256,6 +1325,7 @@
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
                                             <li>全面升级至 {UPDATE_VERSION} 专属定制版。</li>
+                                            <li>新增「智能心动标题」，会悄悄根据我们第一次聊天的氛围为你写下专属的浪漫名字啦。</li>
                                             <li>新增「消息编辑与重发」，随时拥有反悔的特权。</li>
                                             <li>新增「平行时空追踪」，修改后仍可倒回从前，保留每一份原汁原味的回忆。</li>
                                             <li>新增「治愈系主题切换」，星空暗夜与琥珀书卷，随心点亮陪伴你的氛围。</li>
