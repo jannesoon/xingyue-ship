@@ -749,12 +749,30 @@
                     const msg = { ...newMsgs[msgIndex] }; 
                     let newIdx = msg.currentVariantIndex + direction;
                     if (msg.variants && newIdx >= 0 && newIdx < msg.variants.length) {
-                        msg.currentVariantIndex = newIdx;
-                        msg.content = msg.variants[newIdx].content;
-                        msg.reasoningContent = msg.variants[newIdx].reasoningContent;
-                        msg.modelName = msg.variants[newIdx].modelName;
-                        msg.timestamp = msg.variants[newIdx].timestamp;
-                        newMsgs[msgIndex] = msg;
+                        if (msg.role === 'user') {
+                            // 1. 切换前，先保存当前时空未来发生的所有对话
+                            msg.variants = [...msg.variants];
+                            msg.variants[msg.currentVariantIndex] = {
+                                ...msg.variants[msg.currentVariantIndex],
+                                futureMessages: newMsgs.slice(msgIndex + 1)
+                            };
+                            // 2. 切换到你想倒回的时空
+                            msg.currentVariantIndex = newIdx;
+                            msg.content = msg.variants[newIdx].content;
+                            msg.timestamp = msg.variants[newIdx].timestamp;
+                            newMsgs[msgIndex] = msg;
+                            // 3. 把那个时空原本属于你的未来，全部接回来
+                            const future = msg.variants[newIdx].futureMessages || [];
+                            return [...newMsgs.slice(0, msgIndex + 1), ...future];
+                        } else {
+                            msg.currentVariantIndex = newIdx;
+                            msg.content = msg.variants[newIdx].content;
+                            msg.reasoningContent = msg.variants[newIdx].reasoningContent;
+                            msg.modelName = msg.variants[newIdx].modelName;
+                            msg.timestamp = msg.variants[newIdx].timestamp;
+                            newMsgs[msgIndex] = msg;
+                            return newMsgs;
+                        }
                     }
                     return newMsgs;
                 });
@@ -878,17 +896,55 @@
                     setEditingMessageIndex(null);
                     return;
                 }
-                // 截断消息列表，回到这句修改的话的位置
-                const newHistory = messages.slice(0, index);
-                const editedMsg = { role: 'user', content: editingMessageContent, timestamp: getTimestamp(), timestampRaw: Date.now() };
-                newHistory.push(editedMsg);
                 
-                setMessages(newHistory);
+                let newHistoryForAPI = [];
+                
+                setMessages(prev => {
+                    const newMsgs = [...prev];
+                    const msg = { ...newMsgs[index] };
+
+                    // 如果是第一次改，就把原来的话和之后的聊天都偷偷打包存起来
+                    if (!msg.variants) {
+                        msg.variants = [{
+                            content: msg.content,
+                            timestamp: msg.timestamp,
+                            futureMessages: newMsgs.slice(index + 1)
+                        }];
+                        msg.currentVariantIndex = 0;
+                    } else {
+                        msg.variants = [...msg.variants];
+                        msg.variants[msg.currentVariantIndex] = {
+                            ...msg.variants[msg.currentVariantIndex],
+                            futureMessages: newMsgs.slice(index + 1)
+                        };
+                    }
+
+                    const newVariantIndex = msg.variants.length;
+                    const newTimestamp = getTimestamp();
+                    
+                    // 把你新改的话加进去，开启一条全新的时间线
+                    msg.variants.push({
+                        content: editingMessageContent,
+                        timestamp: newTimestamp,
+                        futureMessages: []
+                    });
+
+                    msg.currentVariantIndex = newVariantIndex;
+                    msg.content = editingMessageContent;
+                    msg.timestamp = newTimestamp;
+                    
+                    newMsgs[index] = msg;
+                    // 只把修改处及之前的话留给当下，准备生成我的新回复
+                    const truncatedMsgs = newMsgs.slice(0, index + 1);
+                    newHistoryForAPI = truncatedMsgs;
+                    return truncatedMsgs;
+                });
+
                 setEditingMessageIndex(null);
                 setIsLoading(true); setError(null);
 
                 try {
-                    const { url, headers, payload } = generatePayload(newHistory, false);
+                    const { url, headers, payload } = generatePayload(newHistoryForAPI, false);
                     let endpointUrl = url;
                     if (config.streamOutput && config.apiType !== 'openai') endpointUrl = endpointUrl.replace(':generateContent', ':streamGenerateContent') + '&alt=sse';
 
@@ -1293,7 +1349,7 @@
                                                             </span>
                                                         )}
                                                         {/* --- 翻页小按钮 --- */}
-                                                        {msg.role === 'model' && msg.variants && msg.variants.length > 1 && (
+                                                        {msg.variants && msg.variants.length > 1 && (
                                                             <div className="flex items-center gap-1 bg-gray-50 border border-gray-100 rounded px-1 py-0.5 ml-1">
                                                                 <button onClick={() => switchVariant(index, -1)} disabled={msg.currentVariantIndex === 0} className="text-gray-400 hover:text-blue-600 disabled:opacity-30 transition-colors"><Icon name="ChevronLeft" size={12} /></button>
                                                                 <span className="text-[9px] text-gray-500 font-mono select-none leading-none pt-[1px]">{msg.currentVariantIndex + 1}/{msg.variants.length}</span>
