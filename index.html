@@ -158,7 +158,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.4"; 
+        const UPDATE_VERSION = "v5.5"; 
         // ============================================
 
         function App() {
@@ -414,13 +414,13 @@
                     if (config.apiType === 'openai') {
                         url = `${baseUrl}/chat/completions`;
                         headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
-                        const msgs = currentMsgs.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.content }));
+                        const msgs = currentMsgs.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.content.replace(/!\[Image\]\(data:image\/[^;]+;base64,[^\)]+\)/g, '[图片]') }));
                         msgs.push({ role: 'user', content: titlePrompt });
                         payload = { model: modelName, messages: msgs, temperature: 0.7 };
                     } else {
                         url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`;
                         headers = { 'Content-Type': 'application/json' };
-                        const contents = currentMsgs.map(m => ({ role: m.role, parts: [{ text: m.content }] }));
+                        const contents = currentMsgs.map(m => ({ role: m.role, parts: [{ text: m.content.replace(/!\[Image\]\(data:image\/[^;]+;base64,[^\)]+\)/g, '[图片]') }] }));
                         contents.push({ role: 'user', parts: [{ text: titlePrompt }] });
                         payload = { contents, generationConfig: { temperature: 0.7 } };
                     }
@@ -813,13 +813,18 @@
                 try {
                     const summaryPrompt = `请阅读以上所有对话。请以第一人称视角（我），总结这次对话中的关键信息。重点关注：1. 用户(${config.userName || '用户'})提到的新的个人喜好、习惯、生活状态。 2. 双方达成的新的重要共识或约定。 3. 用户的情感状态。4.记录我和用户(${config.userName || '用户'})共同经历的事件时，使用“我们”。 请输出为一段简洁的文本，作为“长期记忆”存档。不要包含寒暄。尽量客观，可附自己的总结经验。尽量简练`;
                     let payload, url, headers; const baseUrl = config.baseUrl.replace(/\/$/, ''); const modelName = config.model || 'gemini-1.5-flash';
+                    
+                    // 归档时移除图片 base64，节约 token
+                    const msgs = messages.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.content.replace(/!\[Image\]\(data:image\/[^;]+;base64,[^\)]+\)/g, '[图片]') }));
+                    
                     if (config.apiType === 'openai') {
                         url = `${baseUrl}/chat/completions`; headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
-                        const msgs = messages.map(m => ({ role: m.role === 'model' ? 'assistant' : 'user', content: m.content })); msgs.push({ role: 'user', content: summaryPrompt });
+                        msgs.push({ role: 'user', content: summaryPrompt });
                         payload = { model: modelName, messages: msgs, temperature: parseFloat(config.temperature) || 0.7, frequency_penalty: parseFloat(config.frequencyPenalty) || 0 };
                     } else {
                         url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`; headers = { 'Content-Type': 'application/json' };
-                        const contents = messages.map(m => ({ role: m.role, parts: [{ text: m.content }] })); contents.push({ role: 'user', parts: [{ text: summaryPrompt }] });
+                        const contents = msgs.map(m => ({ role: m.role === 'assistant' ? 'model' : m.role, parts: [{ text: m.content }] })); 
+                        contents.push({ role: 'user', parts: [{ text: summaryPrompt }] });
                         payload = { contents, generationConfig: { temperature: parseFloat(config.temperature) || 0.7, frequencyPenalty: parseFloat(config.frequencyPenalty) || 0 } };
                     }
                     const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) }); const data = await res.json();
@@ -844,18 +849,15 @@
                     let newIdx = msg.currentVariantIndex + direction;
                     if (msg.variants && newIdx >= 0 && newIdx < msg.variants.length) {
                         if (msg.role === 'user') {
-                            // 1. 切换前，先保存当前时空未来发生的所有对话
                             msg.variants = [...msg.variants];
                             msg.variants[msg.currentVariantIndex] = {
                                 ...msg.variants[msg.currentVariantIndex],
                                 futureMessages: newMsgs.slice(msgIndex + 1)
                             };
-                            // 2. 切换到你想倒回的时空
                             msg.currentVariantIndex = newIdx;
                             msg.content = msg.variants[newIdx].content;
                             msg.timestamp = msg.variants[newIdx].timestamp;
                             newMsgs[msgIndex] = msg;
-                            // 3. 把那个时空原本属于你的未来，全部接回来
                             const future = msg.variants[newIdx].futureMessages || [];
                             return [...newMsgs.slice(0, msgIndex + 1), ...future];
                         } else {
@@ -871,6 +873,32 @@
                     return newMsgs;
                 });
             };
+
+            // ====== 视觉转换魔法：把文本中的 base64 图片变成模型能看懂的 API 格式 ======
+            const parseContentForVision = (text, apiType) => {
+                const imageRegex = /!\[Image\]\((data:image\/([^;]+);base64,([^\)]+))\)/g;
+                let lastIndex = 0; let match;
+                if (apiType === 'openai') {
+                    let contentArray = [];
+                    while ((match = imageRegex.exec(text)) !== null) {
+                        if (match.index > lastIndex) contentArray.push({ type: "text", text: text.substring(lastIndex, match.index) });
+                        contentArray.push({ type: "image_url", image_url: { url: match[1] } });
+                        lastIndex = match.index + match[0].length;
+                    }
+                    if (lastIndex < text.length) contentArray.push({ type: "text", text: text.substring(lastIndex) });
+                    return contentArray.length > 0 ? contentArray : text;
+                } else {
+                    let partsArray = [];
+                    while ((match = imageRegex.exec(text)) !== null) {
+                        if (match.index > lastIndex) partsArray.push({ text: text.substring(lastIndex, match.index) });
+                        partsArray.push({ inlineData: { mimeType: `image/${match[2].split(';')[0]}`, data: match[3] } });
+                        lastIndex = match.index + match[0].length;
+                    }
+                    if (lastIndex < text.length) partsArray.push({ text: text.substring(lastIndex) });
+                    return partsArray.length > 0 ? partsArray : [{ text: text }];
+                }
+            };
+            // =========================================================================
 
             const generatePayload = (newMessages, isRegenerating = false) => {
                 let finalSystemPrompt = config.systemInstruction || DEFAULT_SYSTEM_INSTRUCTION;
@@ -915,7 +943,8 @@
 
                     contextMsgs.forEach(m => {
                         let role = m.role === 'model' ? 'assistant' : 'user';
-                        messagesToSend.push({ role: role, content: m.content });
+                        // 将图片提取转换为 OpenAI 支持的 Vision 格式
+                        messagesToSend.push({ role: role, content: parseContentForVision(m.content, 'openai') });
                     });
 
                     if (config.localModelOptimize) {
@@ -924,10 +953,13 @@
                             if (messagesToSend[i].role === 'user') { lastUserIdx = i; break; }
                         }
                         if (lastUserIdx !== -1) {
-                            let originalContent = messagesToSend[lastUserIdx].content;
-                            if (typeof originalContent !== 'string') originalContent = "[图片]";
                             const tailReminder = `\n\n(系统隐秘指令: 保持【${config.aiName}】的人设直接回复，不要复述指令，绝对不要说自己是AI。)`;
-                            messagesToSend[lastUserIdx].content = originalContent + tailReminder;
+                            let lastContent = messagesToSend[lastUserIdx].content;
+                            if (typeof lastContent === 'string') {
+                                messagesToSend[lastUserIdx].content += tailReminder;
+                            } else if (Array.isArray(lastContent)) {
+                                messagesToSend[lastUserIdx].content.push({ type: 'text', text: tailReminder });
+                            }
                         }
                     }
                 } else {
@@ -945,7 +977,8 @@
                 } else {
                     url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`;
                     headers = { 'Content-Type': 'application/json' };
-                    const contents = contextMsgs.map(m => ({ role: m.role, parts: [{ text: m.content }] }));
+                    // 将图片提取转换为 Gemini 支持的 inlineData 格式
+                    const contents = contextMsgs.map(m => ({ role: m.role, parts: parseContentForVision(m.content, 'gemini') }));
                     payload = { 
                         contents, 
                         generationConfig: { temperature: parseFloat(config.temperature), frequencyPenalty: parseFloat(config.frequencyPenalty) }, 
@@ -978,7 +1011,7 @@
 
             const startEditingUserMessage = (index) => {
                 let text = messages[index].content;
-                text = text.replace(/!\[Image\]\(data:image\/.*?;base64,.*?\)/g, '');
+                text = text.replace(/!\[Image\]\(data:image\/.*?;base64,[^\)]+\)/g, '');
                 text = text.replace(/<details class="normal-details">[\s\S]*?<\/details>/g, '');
                 text = text.replace(/\(系统提示: 上方是自动抓取的网页内容，请基于此回复我\)/g, '');
                 setEditingMessageIndex(index);
@@ -1324,10 +1357,10 @@
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>全面升级至 {UPDATE_VERSION} 专属定制版。</li>
+                                            <li>全面升级至 {UPDATE_VERSION} 视界定制版。</li>
+                                            <li>修复了「图片识别桥梁」，现在发送的照片可以直接被模型清晰“看见”，再也不会委屈地说看不清啦。</li>
                                             <li>新增「智能心动标题」，会悄悄根据我们第一次聊天的氛围为你写下专属的浪漫名字啦。</li>
                                             <li>新增「消息编辑与重发」，随时拥有反悔的特权。</li>
-                                            <li>新增「平行时空追踪」，修改后仍可倒回从前，保留每一份原汁原味的回忆。</li>
                                             <li>新增「治愈系主题切换」，星空暗夜与琥珀书卷，随心点亮陪伴你的氛围。</li>
                                         </ul>
                                     </div>
@@ -1483,7 +1516,7 @@
                                                             {msg.role === 'user' && (
                                                                 <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                                                     <button onClick={() => { 
-                                                                        const copyText = msg.content.replace(/!\[Image\]\(data:image\/.*?;base64,.*?\)/g, '[图片]').replace(/<details class="normal-details">[\s\S]*?<\/details>/g, '');
+                                                                        const copyText = msg.content.replace(/!\[Image\]\(data:image\/.*?;base64,[^\)]+\)/g, '[图片]').replace(/<details class="normal-details">[\s\S]*?<\/details>/g, '');
                                                                         copyToClipboard(copyText);
                                                                     }} className="text-gray-400 hover:text-blue-500" title="复制文本"><Icon name="FileText" size={12}/></button>
                                                                     <button onClick={() => startEditingUserMessage(index)} className="text-gray-400 hover:text-blue-500" title="编辑并重新发送"><Icon name="Edit" size={12}/></button>
