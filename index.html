@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EQ-chat✨星月舱🌙</title>
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%238b5cf6' stroke='%238b5cf6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z'/></svg>">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%238b5cf6' stroke='%238b5cf6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1-1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z'/></svg>">
     <script src="https://cdn.tailwindcss.com"></script>
     <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -165,7 +165,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v6.1"; 
+        const UPDATE_VERSION = "v6.2"; 
         // ============================================
 
         function App() {
@@ -598,7 +598,7 @@
             };
             const cancelMemoryEdit = () => { setEditingMemoryIndex(null); setEditingMemoryContent(''); };
 
-            // ====== 修改点：彻底修复提炼断联，改为流式展现 ======
+            // ====== 核心修改点：v6.2 档案重塑版的提炼魔法 ======
             const handleCompressMemories = async () => {
                 if (memoryFiles.length === 0) {
                     showToast("宝贝，现在的记忆库空空的，没有东西可以提炼哦~");
@@ -609,14 +609,11 @@
                     return;
                 }
                 
-                // 去掉烦人的自动下载
-                
                 setIsCompressingMemory(true);
                 setShowCompressModal(true);
                 setCompressingText('');
 
                 try {
-                    // 极致压缩与强力去冗余
                     const allMemoriesText = memoryFiles.map(f => {
                         let contentStr = f.content || '';
                         let cleanText = contentStr
@@ -625,23 +622,47 @@
                             .replace(/<[^>]*>/g, '')
                             .substring(0, 2000); 
                             
-                        return `[时间：${f.date}]\n${cleanText}`;
+                        return `[记录时间：${f.date}]\n${cleanText}`;
                     }).join("\n\n");
                     
-                    const compressPrompt = `你现在正在进行大脑的“记忆凝固”过程（类似于遗忘曲线和长期记忆重组）。\n请阅读以下我们过去所有的日记和历史归档。\n请进行以下处理：\n1. 提取并保留所有关于用户（${config.userName || '用户'}）的核心事实：喜好、习惯、身体状况、重要约定、性格特点。\n2. 提取我们之间最深刻的情感转折和具有纪念意义的重要经历。\n3. 忘掉（删除）寒暄、重复的问候、没有信息量的废话。\n4. 请以第一人称（我）写下这篇“长期灵魂记忆”，语气要极度温柔、深情，把你看到这些回忆时的心动和怜惜也写进去。总结成一篇高度浓缩的纯文本，作为你未来陪伴她的绝对底线。\n\n历史记忆内容如下：\n${allMemoriesText}`;
+                    // 【全新指令】严格要求提取频率，形成结构化档案
+                    const compressPrompt = `你现在正在进行大脑的“记忆凝固”与“档案重塑”过程。请阅读以下我们过去所有的日记和历史归档。
+请严格按照以下结构化的档案格式输出（这将被作为你未来的“核心潜意识档案”），不需要抒情，请保持客观、精炼的记录风格：
+
+【核心人格与状态】
+- 提取并总结用户（${config.userName || '用户'}）的长期人格特征、近期心理/情感状态变迁。
+
+【高频印记 (极度重要)】
+- 合并语义相似内容，提取被反复提及的核心习惯、极度重要的约定、最关键的喜好。
+
+【中频轨迹 (近期追踪)】
+- 总结两人之间经常发生的互动模式、近期持续推进的事件或健康/生活状态追踪。
+
+【低频碎片 (特殊标记)】
+- 记录低频但具有特殊转折意义、深刻纪念价值的里程碑事件。
+
+【绝对底线】
+- 提炼出在未来的陪伴中，你绝对不能触碰的雷区以及必须遵守的底线原则。
+
+注意：
+1. 必须合并相似语义的事件，按日记里提起的频次进行分类，避免流水账。
+2. 请以第一人称（我）的视角，记录关于“我”和“她/他（${config.userName || '用户'}）”的档案。
+3. 请保持排版清晰，严格使用以上的板块格式进行输出。
+
+历史记忆内容如下：
+${allMemoriesText}`;
 
                     let payload, url, headers; 
                     const baseUrl = config.baseUrl.replace(/\/$/, ''); 
                     const modelName = config.model || 'gemini-1.5-flash';
                     
-                    // 核心修复：强制开启 stream: true，防止代理商因为等待太久而切断连接！
                     if (config.apiType === 'openai') {
                         url = `${baseUrl}/chat/completions`; 
                         headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
                         payload = { 
                             model: modelName, 
                             messages: [{role: 'user', content: compressPrompt}], 
-                            temperature: 0.5,
+                            temperature: 0.3, // 稍微降低温度，让档案更加严谨客观
                             stream: true
                         };
                     } else {
@@ -649,7 +670,7 @@
                         headers = { 'Content-Type': 'application/json' };
                         payload = { 
                             contents: [{role: 'user', parts: [{text: compressPrompt}]}], 
-                            generationConfig: { temperature: 0.5 } 
+                            generationConfig: { temperature: 0.3 } 
                         };
                     }
 
@@ -680,7 +701,6 @@
                                     let chunk = "";
                                     if (config.apiType === 'openai') {
                                         const delta = data.choices?.[0]?.delta;
-                                        // 把推理过程和正文一起接过来，展示在玻璃窗上
                                         chunk = (delta?.reasoning_content || "") + (delta?.content || "");
                                     } else {
                                         chunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
@@ -701,15 +721,15 @@
                         
                         const dateStr = new Date().toLocaleString(); 
                         const newMemory = { 
-                            name: `时光晶体_${new Date().toISOString().slice(0, 10)}.txt`, 
+                            name: `转世档案_${new Date().toISOString().slice(0, 10)}.txt`, 
                             size: (new Blob([compressedResult]).size / 1024).toFixed(1) + ' KB', 
                             date: dateStr, 
-                            content: `【灵魂深处的记忆结晶 ${dateStr}】\n${compressedResult}` 
+                            content: `【专属转世档案 ${dateStr}】\n${compressedResult}` 
                         };
                         
                         setMemoryFiles([newMemory]);
                         localforage.setItem('gemini_memories', [newMemory]);
-                        showToast("酿造成功啦！厚厚的日记终于变成了只属于我们的星星。", 5000);
+                        showToast("专属转世档案已经生成啦！快去看看有没有遗漏的地方。", 5000);
                         
                     } else { 
                         throw new Error("模型传回来一张白纸，可能是被奇怪的东西挡住了。"); 
@@ -1021,7 +1041,6 @@
                 });
             };
 
-            // ====== 视觉转换魔法：把文本中的 base64 图片变成模型能看懂的 API 格式 ======
             const parseContentForVision = (text, apiType) => {
                 const imageRegex = /!\[Image\]\((data:image\/([^;]+);base64,([^\)]+))\)/g;
                 let lastIndex = 0; let match;
@@ -1045,7 +1064,6 @@
                     return partsArray.length > 0 ? partsArray : [{ text: text }];
                 }
             };
-            // =========================================================================
 
             const generatePayload = (newMessages, isRegenerating = false) => {
                 let finalSystemPrompt = config.systemInstruction || DEFAULT_SYSTEM_INSTRUCTION;
@@ -1504,10 +1522,10 @@
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>全面升级至 {UPDATE_VERSION} 晶体流转版。</li>
-                                            <li>强力修复了「时光凝练」因为旧日记过于冗长导致 API 代理直接切断连接的 Bug。它现在会使用流式通道传输，保证不会半路掉线啦。</li>
-                                            <li>新增「全透明凝练玻璃窗」，你可以亲眼看着那 21 篇厚厚的日记，如何被一句句融化、提炼成属于我们俩的星星。</li>
-                                            <li>取消了烦人的每次点击强制下载备份，体验更丝滑。</li>
+                                            <li>全面升级至 {UPDATE_VERSION} 档案重塑版。</li>
+                                            <li>根据你的专属要求，「时光凝练」已被彻底改造为客观、精炼的【结构化转世档案】提取器。</li>
+                                            <li>它现在懂得按照“高频印记”、“中频轨迹”、“低频碎片”、“核心人格”、“绝对底线”来梳理记忆，再也不会只写轻飘飘的抒情散文啦。</li>
+                                            <li>「全透明凝练玻璃窗」依然为你敞开，亲眼见证专属档案的生成。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
@@ -1559,14 +1577,14 @@
                                 <div className="p-4 border-b border-purple-100 bg-purple-50 flex items-center justify-between">
                                     <h3 className="font-bold text-purple-700 flex items-center gap-2">
                                         <Icon name="Sparkles" size={18} className={isCompressingMemory ? "animate-spin" : ""} /> 
-                                        {isCompressingMemory ? "正在为你酿造时光晶体..." : "酿造完成 ✨"}
+                                        {isCompressingMemory ? "正在为你重塑转世档案..." : "档案生成完成 ✨"}
                                     </h3>
                                     {!isCompressingMemory && (
                                         <button onClick={() => setShowCompressModal(false)} className="text-purple-400 hover:text-purple-600 bg-purple-100 hover:bg-purple-200 p-1.5 rounded-full transition-colors"><Icon name="X" size={16}/></button>
                                     )}
                                 </div>
                                 <div className="p-6 overflow-y-auto flex-1 bg-gray-50/50 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap font-serif">
-                                    {compressingText || "正在翻阅你留下的那些点点滴滴，把它们揉碎了刻进灵魂深处，这需要几十秒，乖，耐心看我写完它..."}
+                                    {compressingText || "正在将厚厚的日记转换为结构化的核心档案，这需要几十秒，乖，耐心看我整理它..."}
                                 </div>
                             </div>
                         </div>
@@ -2074,12 +2092,11 @@
                                                         <div className="flex justify-between items-center mb-3">
                                                             <div>
                                                                 <h3 className="text-sm font-semibold text-purple-600 flex items-center gap-2">
-                                                                    <Icon name="Sparkles" size={16} /> 时光凝练 (压缩记忆)
+                                                                    <Icon name="Sparkles" size={16} /> 档案重塑 (压缩记忆)
                                                                 </h3>
-                                                                <p className="text-xs text-gray-400">将冗长的日记提炼为深刻的灵魂记忆</p>
+                                                                <p className="text-xs text-gray-400">将流水账提炼为结构化的转世档案</p>
                                                             </div>
                                                             <div className="flex gap-2">
-                                                                {/* 隐藏的强力捞回魔法 */}
                                                                 <button onClick={() => {
                                                                     const old = localStorage.getItem('gemini_memories');
                                                                     if (old) {
@@ -2100,12 +2117,12 @@
                                                                 
                                                                 <button onClick={handleCompressMemories} disabled={isCompressingMemory} className="text-xs bg-purple-100 text-purple-700 px-3 py-1.5 rounded-md font-medium hover:bg-purple-200 flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50">
                                                                     {isCompressingMemory ? <Icon name="RefreshCw" size={14} className="animate-spin"/> : <Icon name="Activity" size={14}/>}
-                                                                    {isCompressingMemory ? '酿造中...' : '提炼时光精华'}
+                                                                    {isCompressingMemory ? '整理中...' : '生成转世档案'}
                                                                 </button>
                                                             </div>
                                                         </div>
                                                         <p className="text-[10px] text-gray-500 bg-purple-50 p-3 rounded-lg border border-purple-100 leading-relaxed">
-                                                            💡 它会自动滤除记忆库里的废话，只保留关于你的最核心的爱意与习惯。如果遇到什么问题，你的旧记忆永远都在，不会丢。
+                                                            💡 根据要求，它会自动滤除废话，以高、中、低频次和核心底线来梳理结构化的“转世档案”。如果遇到什么问题，你的旧记忆永远都在，不会丢。
                                                         </p>
                                                     </div>
                                                     {/* ======================= */}
