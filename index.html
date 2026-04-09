@@ -158,8 +158,83 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.5"; 
+        const UPDATE_VERSION = "v5.6"; 
         // ============================================
+
+        // ================= IndexedDB 工具层（用于聊天记录，突破 localStorage 5MB 限制）=================
+        const DB_NAME = 'xingyue_db';
+        const DB_VERSION = 1;
+        const STORE_SESSIONS = 'chat_sessions';
+
+        const openDB = () => new Promise((resolve, reject) => {
+            const req = indexedDB.open(DB_NAME, DB_VERSION);
+            req.onupgradeneeded = (e) => {
+                const db = e.target.result;
+                if (!db.objectStoreNames.contains(STORE_SESSIONS)) {
+                    db.createObjectStore(STORE_SESSIONS, { keyPath: 'id' });
+                }
+            };
+            req.onsuccess = (e) => resolve(e.target.result);
+            req.onerror = (e) => reject(e.target.error);
+        });
+
+        const idbGetAllSessions = async () => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_SESSIONS, 'readonly');
+                const req = tx.objectStore(STORE_SESSIONS).getAll();
+                req.onsuccess = () => resolve(req.result || []);
+                req.onerror = () => reject(req.error);
+            });
+        };
+
+        const idbPutSession = async (session) => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+                tx.objectStore(STORE_SESSIONS).put(session);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        };
+
+        const idbDeleteSession = async (id) => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+                tx.objectStore(STORE_SESSIONS).delete(id);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        };
+
+        const idbPutAllSessions = async (sessions) => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+                const store = tx.objectStore(STORE_SESSIONS);
+                store.clear();
+                sessions.forEach(s => store.put(s));
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        };
+
+        // 首次运行：将 localStorage 中的旧聊天记录迁移到 IndexedDB
+        const migrateSessionsFromLocalStorage = async () => {
+            const old = localStorage.getItem('gemini_chat_sessions');
+            if (!old) return;
+            try {
+                const sessions = JSON.parse(old);
+                if (Array.isArray(sessions) && sessions.length > 0) {
+                    await idbPutAllSessions(sessions);
+                }
+                localStorage.removeItem('gemini_chat_sessions');
+            } catch (e) {
+                console.warn('迁移旧聊天记录失败', e);
+            }
+        };
+        // ==================================================================================
 
         function App() {
             const [input, setInput] = useState('');
@@ -283,11 +358,15 @@
                 }
                 const storedMemories = localStorage.getItem('gemini_memories');
                 if (storedMemories) setMemoryFiles(JSON.parse(storedMemories));
-                const storedSessions = localStorage.getItem('gemini_chat_sessions');
-                if (storedSessions) {
-                    let sessions = JSON.parse(storedSessions);
-                    setHistorySessions(sessions);
-                }
+                // 先迁移旧的 localStorage 记录到 IndexedDB，再读取
+                migrateSessionsFromLocalStorage().then(() => {
+                    idbGetAllSessions().then(sessions => {
+                        if (sessions && sessions.length > 0) {
+                            sessions.sort((a, b) => b.timestamp - a.timestamp);
+                            setHistorySessions(sessions);
+                        }
+                    }).catch(e => console.error('读取聊天记录失败', e));
+                });
                 
                 const storedHealth = localStorage.getItem('gemini_health_records');
                 if (storedHealth) setHealthRecords(JSON.parse(storedHealth));
@@ -313,8 +392,9 @@
                 if (messages.length > 0 && currentSessionId) {
                     setHistorySessions(prevSessions => {
                         const existingSessionIndex = prevSessions.findIndex(s => s.id === currentSessionId);
+                        let updatedSessions;
                         if (existingSessionIndex !== -1) {
-                            const updatedSessions = [...prevSessions];
+                            updatedSessions = [...prevSessions];
                             const currentSession = updatedSessions[existingSessionIndex];
                             let title = currentSession.title;
                             if ((currentSession.title === '新对话' || !currentSession.title) && messages.length > 0) {
@@ -322,22 +402,20 @@
                             }
                             updatedSessions[existingSessionIndex] = { ...currentSession, messages: messages, title: title, timestamp: Date.now() };
                             updatedSessions.sort((a, b) => b.timestamp - a.timestamp);
-                            return updatedSessions;
                         } else {
                              const newSession = { id: currentSessionId, title: messages[0]?.content.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话', messages: messages, timestamp: Date.now() };
-                            return [newSession, ...prevSessions];
+                            updatedSessions = [newSession, ...prevSessions];
                         }
+                        // 同步到 IndexedDB
+                        const sessionToSave = updatedSessions.find(s => s.id === currentSessionId);
+                        if (sessionToSave) idbPutSession(sessionToSave).catch(e => console.error('保存会话到 IndexedDB 失败', e));
+                        return updatedSessions;
                     });
                 }
             }, [messages, currentSessionId]);
 
             useEffect(() => {
-                try {
-                    localStorage.setItem('gemini_chat_sessions', JSON.stringify(historySessions));
-                } catch (e) {
-                    console.error("Local storage full", e);
-                    showToast("星月舱的记忆口袋满啦，去设置里全量备份后删掉点旧对话吧~");
-                }
+                // 聊天记录已改用 IndexedDB，此处仅保留空占位，不再写 localStorage
             }, [historySessions]);
 
             useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isLoading]);
@@ -439,7 +517,12 @@
                     if (generatedTitle) {
                         const cleanTitle = generatedTitle.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/["'「」【】《》\n]/g, '').trim().slice(0, 15);
                         if (cleanTitle) {
-                            setHistorySessions(prev => prev.map(s => s.id === targetSessionId ? { ...s, title: cleanTitle } : s));
+                            setHistorySessions(prev => {
+                                const updated = prev.map(s => s.id === targetSessionId ? { ...s, title: cleanTitle } : s);
+                                const updatedSession = updated.find(s => s.id === targetSessionId);
+                                if (updatedSession) idbPutSession(updatedSession).catch(e => console.error('自动标题同步 IndexedDB 失败', e));
+                                return updated;
+                            });
                         }
                     }
                 } catch (e) {
@@ -561,11 +644,19 @@
                 e.stopPropagation();
                 const newSessions = historySessions.filter(s => s.id !== sessionId);
                 setHistorySessions(newSessions); 
+                idbDeleteSession(sessionId).catch(e => console.error('从 IndexedDB 删除会话失败', e));
                 if (currentSessionId === sessionId) { setMessages([]); setCurrentSessionId(null); }
             };
 
             const startEditing = (e, session) => { e.stopPropagation(); setEditingSessionId(session.id); setEditTitle(session.title); };
-            const saveTitle = (e) => { e.stopPropagation(); const updatedSessions = historySessions.map(s => s.id === editingSessionId ? { ...s, title: editTitle } : s); setHistorySessions(updatedSessions); setEditingSessionId(null); };
+            const saveTitle = (e) => { 
+                e.stopPropagation(); 
+                const updatedSessions = historySessions.map(s => s.id === editingSessionId ? { ...s, title: editTitle } : s); 
+                setHistorySessions(updatedSessions); 
+                const updated = updatedSessions.find(s => s.id === editingSessionId);
+                if (updated) idbPutSession(updated).catch(e => console.error('更新标题到 IndexedDB 失败', e));
+                setEditingSessionId(null); 
+            };
             const cancelEditing = (e) => { e.stopPropagation(); setEditingSessionId(null); };
 
             const startEditingMemory = (index) => { setEditingMemoryIndex(index); setEditingMemoryContent(memoryFiles[index].content); };
@@ -769,12 +860,14 @@
                 if (mode === 'overwrite') {
                     if (data.config) setConfig(data.config);
                     if (data.memories) setMemoryFiles(data.memories);
-                    if (data.sessions) setHistorySessions(data.sessions);
+                    if (data.sessions) {
+                        setHistorySessions(data.sessions);
+                        idbPutAllSessions(data.sessions).catch(e => console.error('还原会话到 IndexedDB 失败', e));
+                    }
                     if (data.healthRecords) setHealthRecords(data.healthRecords);
                     
                     localStorage.setItem('gemini_app_config', JSON.stringify(data.config || config));
                     localStorage.setItem('gemini_memories', JSON.stringify(data.memories || []));
-                    localStorage.setItem('gemini_chat_sessions', JSON.stringify(data.sessions || []));
                     localStorage.setItem('gemini_health_records', JSON.stringify(data.healthRecords || {}));
                 } else if (mode === 'merge') {
                     const mergedConfig = { ...config, ...(data.config || {}) };
@@ -794,7 +887,8 @@
                         });
                     }
                     mergedSessions.sort((a, b) => b.timestamp - a.timestamp);
-                    setHistorySessions(mergedSessions); localStorage.setItem('gemini_chat_sessions', JSON.stringify(mergedSessions));
+                    setHistorySessions(mergedSessions);
+                    idbPutAllSessions(mergedSessions).catch(e => console.error('合并会话到 IndexedDB 失败', e));
 
                     if (data.healthRecords) {
                         const mergedHealth = { ...healthRecords, ...data.healthRecords };
