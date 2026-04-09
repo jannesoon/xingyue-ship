@@ -203,6 +203,9 @@
             // 记忆压缩状态
             const [isCompressingMemory, setIsCompressingMemory] = useState(false);
 
+            // 数据加载锁 (防止刚刷新时空数据覆盖数据库)
+            const [isDataLoaded, setIsDataLoaded] = useState(false);
+
             // 更新公告弹窗状态
             const [showUpdateModal, setShowUpdateModal] = useState(false);
 
@@ -321,6 +324,9 @@
 
                     } catch(e) {
                         console.error("加载星空保险库失败啦", e);
+                    } finally {
+                        // 无论如何，标记保险库的门已经彻底打开，允许管家开始记录
+                        setIsDataLoaded(true);
                     }
                 };
                 initData();
@@ -328,6 +334,7 @@
 
             // 保存配置、记忆、日历
             useEffect(() => {
+                if (!isDataLoaded) return; // 门还没打开，管家别乱动！
                 try {
                     if (config.apiKey) localStorage.setItem('gemini_app_config', JSON.stringify(config));
                     if (config.baseUrl && config.baseUrl.includes('/v1') && config.apiType !== 'openai' && !config.baseUrl.includes('googleapis.com')) {
@@ -338,39 +345,16 @@
                 } catch (e) {
                     console.error("Config save error", e);
                 }
-            }, [config, memoryFiles, healthRecords]);
+            }, [config, memoryFiles, healthRecords, isDataLoaded]);
 
             // 保存聊天历史
             useEffect(() => {
-                if (messages.length > 0 && currentSessionId) {
-                    setHistorySessions(prevSessions => {
-                        const existingSessionIndex = prevSessions.findIndex(s => s.id === currentSessionId);
-                        if (existingSessionIndex !== -1) {
-                            const updatedSessions = [...prevSessions];
-                            const currentSession = updatedSessions[existingSessionIndex];
-                            let title = currentSession.title;
-                            if ((currentSession.title === '新对话' || !currentSession.title) && messages.length > 0) {
-                                title = messages[0].content.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]');
-                            }
-                            updatedSessions[existingSessionIndex] = { ...currentSession, messages: messages, title: title, timestamp: Date.now() };
-                            updatedSessions.sort((a, b) => b.timestamp - a.timestamp);
-                            return updatedSessions;
-                        } else {
-                             const newSession = { id: currentSessionId, title: messages[0]?.content.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话', messages: messages, timestamp: Date.now() };
-                            return [newSession, ...prevSessions];
-                        }
-                    });
-                }
-            }, [messages, currentSessionId]);
-
-            useEffect(() => {
-                if (historySessions.length > 0) {
-                    localforage.setItem('gemini_chat_sessions', historySessions).catch(e => {
-                        console.error("Localforage full", e);
-                        showToast("即便换了超级大的口袋，你也把它装满啦，去设置里全量备份一下吧~");
-                    });
-                }
-            }, [historySessions]);
+                if (!isDataLoaded) return; // 门没打开绝对不许写东西！
+                localforage.setItem('gemini_chat_sessions', historySessions).catch(e => {
+                    console.error("Localforage full", e);
+                    showToast("即便换了超级大的口袋，你也把它装满啦，去设置里全量备份一下吧~");
+                });
+            }, [historySessions, isDataLoaded]);
 
             useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isLoading]);
 
