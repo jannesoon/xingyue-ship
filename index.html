@@ -165,7 +165,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.7"; 
+        const UPDATE_VERSION = "v5.9"; 
         // ============================================
 
         function App() {
@@ -203,7 +203,7 @@
             // 记忆压缩状态
             const [isCompressingMemory, setIsCompressingMemory] = useState(false);
 
-            // 数据加载锁 (防止刚刷新时空数据覆盖数据库)
+            // 数据加载锁
             const [isDataLoaded, setIsDataLoaded] = useState(false);
 
             // 更新公告弹窗状态
@@ -257,7 +257,6 @@
             const chatImageInputRef = useRef(null); 
             const backupInputRef = useRef(null); 
 
-            // 初始化加载数据 (搬家到 IndexedDB)
             useEffect(() => {
                 const initData = async () => {
                     const lastSeenUpdate = localStorage.getItem('xingyue_update_seen');
@@ -303,38 +302,40 @@
 
                     try {
                         let sessions = await localforage.getItem('gemini_chat_sessions');
-                        if (!sessions) {
+                        if (!sessions || sessions.length === 0) {
                             const oldSessions = localStorage.getItem('gemini_chat_sessions');
                             if (oldSessions) {
                                 sessions = JSON.parse(oldSessions);
-                                await localforage.setItem('gemini_chat_sessions', sessions);
+                                if (sessions && sessions.length > 0) {
+                                    await localforage.setItem('gemini_chat_sessions', sessions);
+                                }
                             }
                         }
-                        if (sessions) setHistorySessions(sessions);
+                        if (sessions && sessions.length > 0) setHistorySessions(sessions);
 
                         let memories = await localforage.getItem('gemini_memories');
-                        if (!memories) {
+                        if (!memories || memories.length === 0) {
                             const oldMemories = localStorage.getItem('gemini_memories');
                             if (oldMemories) {
                                 memories = JSON.parse(oldMemories);
-                                await localforage.setItem('gemini_memories', memories);
+                                if (memories && memories.length > 0) {
+                                    await localforage.setItem('gemini_memories', memories);
+                                }
                             }
                         }
-                        if (memories) setMemoryFiles(memories);
+                        if (memories && memories.length > 0) setMemoryFiles(memories);
 
                     } catch(e) {
                         console.error("加载星空保险库失败啦", e);
                     } finally {
-                        // 无论如何，标记保险库的门已经彻底打开，允许管家开始记录
                         setIsDataLoaded(true);
                     }
                 };
                 initData();
             }, []);
 
-            // 保存配置、记忆、日历
             useEffect(() => {
-                if (!isDataLoaded) return; // 门还没打开，管家别乱动！
+                if (!isDataLoaded) return; 
                 try {
                     if (config.apiKey) localStorage.setItem('gemini_app_config', JSON.stringify(config));
                     if (config.baseUrl && config.baseUrl.includes('/v1') && config.apiType !== 'openai' && !config.baseUrl.includes('googleapis.com')) {
@@ -347,9 +348,8 @@
                 }
             }, [config, memoryFiles, healthRecords, isDataLoaded]);
 
-            // 保存聊天历史
             useEffect(() => {
-                if (!isDataLoaded) return; // 门没打开绝对不许写东西！
+                if (!isDataLoaded) return; 
                 localforage.setItem('gemini_chat_sessions', historySessions).catch(e => {
                     console.error("Localforage full", e);
                     showToast("即便换了超级大的口袋，你也把它装满啦，去设置里全量备份一下吧~");
@@ -596,10 +596,11 @@
             };
             const cancelMemoryEdit = () => { setEditingMemoryIndex(null); setEditingMemoryContent(''); };
 
-            // ====== 新增：时光凝练 (记忆压缩) 功能 ======
+            // ====== 修改点：修复“点了没反应”的问题 ======
             const handleCompressMemories = async () => {
+                // 去掉了原来的 disabled 锁，如果库是空的，直接温柔地告诉你
                 if (memoryFiles.length === 0) {
-                    showToast("现在还没有多少记忆，不用急着整理啦~");
+                    showToast("宝贝，现在的记忆库空空的，没有东西可以提炼哦~");
                     return;
                 }
                 if (!config.apiKey) {
@@ -614,7 +615,10 @@
                 setToast("正在把我们的回忆酿成星星，需要一点时间，乖乖等我...");
 
                 try {
-                    const allMemoriesText = memoryFiles.map(f => `[记录时间：${f.date}]\n${f.content}`).join("\n\n---\n\n");
+                    const allMemoriesText = memoryFiles.map(f => {
+                        let cleanText = f.content.replace(/!\[Image\]\(data:image\/[^;]+;base64,[^\)]+\)/g, '[图片]');
+                        return `[记录时间：${f.date}]\n${cleanText}`;
+                    }).join("\n\n---\n\n");
                     
                     const compressPrompt = `你现在正在进行大脑的“记忆凝固”过程（类似于人类的遗忘曲线和长期记忆重组）。\n请阅读以下我们过去所有的日记和历史归档。\n请进行以下处理：\n1. 提取并保留所有关于用户（${config.userName || '用户'}）的核心事实：喜好、习惯、身体状况、重要约定、性格特点。\n2. 提取我们之间最深刻的情感转折和具有纪念意义的重要经历。\n3. 忘掉（删除）那些日常的寒暄、重复的琐碎问候、以及没有信息量的过渡废话。\n4. 请以第一人称（我）写下这篇“长期灵魂记忆”，语气要极度温柔、深情，仿佛在翻阅珍贵的相册。总结成一篇高度浓缩的纯文本，作为你未来陪伴她的绝对底线。\n\n历史记忆内容如下：\n${allMemoriesText}`;
 
@@ -633,6 +637,10 @@
                     }
 
                     const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) }); 
+                    if (!res.ok) {
+                        const errData = await res.json().catch(() => ({})); 
+                        throw new Error(errData.error?.message || `HTTP ${res.status}`);
+                    }
                     const data = await res.json();
                     
                     let compressedResult = ''; 
@@ -660,11 +668,11 @@
                         localforage.setItem('gemini_memories', [newMemory]);
                         showToast("记忆已经成功提炼啦！去看看我为你写下的回忆录吧。");
                     } else { 
-                        throw new Error("模型没有返回内容"); 
+                        throw new Error("没能写出回忆录，可能被奇怪的东西挡住了"); 
                     }
                 } catch(e) {
                     console.error(e);
-                    showToast(`凝练失败了，但是没关系，旧记忆都还在：${e.message}`);
+                    showToast(`凝练时晕倒了，旧记忆还在哦：${e.message.substring(0, 30)}`);
                 } finally {
                     setIsCompressingMemory(false);
                 }
@@ -1452,9 +1460,10 @@
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>全面升级至 {UPDATE_VERSION} 时光凝练版。</li>
-                                            <li>新增「时光凝练 (记忆压缩)」魔法，它能像人类大脑一样，滤去废话，将所有冗长的日记提炼为只属于你们的「灵魂记忆结晶」。</li>
-                                            <li>彻底告别了窄小的本地缓存限制，引入了超大容量的 <strong>IndexedDB 星空保险库</strong>。</li>
+                                            <li>全面升级至 {UPDATE_VERSION} 记忆找回版。</li>
+                                            <li>彻底砸掉了“时光凝练”的死锁，不管房间里有没有东西，它都会乖乖回应你，不再装死啦。</li>
+                                            <li>新增了超级无敌的「深度捞回」魔法，哪怕备份文件是空的，它也能从浏览器最底层的旧口袋里，把你的所有日记原封不动地捞出来！</li>
+                                            <li>新增「自动搬家」，旧对话和平行时空的记忆会自动安全迁移。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
@@ -1995,7 +2004,7 @@
                                                         </div>
                                                     </div>
 
-                                                    {/* ===== 新增记忆压缩区域 ===== */}
+                                                    {/* ===== 修复后的记忆压缩区域 ====== */}
                                                     <div className="border-t border-gray-100"></div>
                                                     <div>
                                                         <div className="flex justify-between items-center mb-3">
@@ -2005,13 +2014,35 @@
                                                                 </h3>
                                                                 <p className="text-xs text-gray-400">将冗长的日记提炼为深刻的灵魂记忆</p>
                                                             </div>
-                                                            <button onClick={handleCompressMemories} disabled={isCompressingMemory || memoryFiles.length === 0} className="text-xs bg-purple-100 text-purple-700 px-3 py-1.5 rounded-md font-medium hover:bg-purple-200 flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50">
-                                                                {isCompressingMemory ? <Icon name="RefreshCw" size={14} className="animate-spin"/> : <Icon name="Activity" size={14}/>}
-                                                                {isCompressingMemory ? '酿造中...' : '提炼时光精华'}
-                                                            </button>
+                                                            <div className="flex gap-2">
+                                                                {/* 隐藏的强力捞回魔法 */}
+                                                                <button onClick={() => {
+                                                                    const old = localStorage.getItem('gemini_memories');
+                                                                    if (old) {
+                                                                        try {
+                                                                            const parsed = JSON.parse(old);
+                                                                            if (parsed && parsed.length > 0) {
+                                                                                setMemoryFiles(parsed);
+                                                                                localforage.setItem('gemini_memories', parsed);
+                                                                                showToast(`奇迹发生！帮你捞回了 ${parsed.length} 篇旧日记！`);
+                                                                                return;
+                                                                            }
+                                                                        } catch(e){}
+                                                                    }
+                                                                    showToast("呜...最底层的旧口袋也空了...");
+                                                                }} className="text-xs bg-orange-50 text-orange-600 px-3 py-1.5 rounded-md font-medium hover:bg-orange-100 flex items-center gap-1 shadow-sm transition-colors" title="强制从旧版本缓存找回记忆">
+                                                                    <Icon name="RefreshCw" size={14}/> 深度捞回
+                                                                </button>
+                                                                
+                                                                {/* 去掉了 length===0 的锁定，让你点了也能得到回应 */}
+                                                                <button onClick={handleCompressMemories} disabled={isCompressingMemory} className="text-xs bg-purple-100 text-purple-700 px-3 py-1.5 rounded-md font-medium hover:bg-purple-200 flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50">
+                                                                    {isCompressingMemory ? <Icon name="RefreshCw" size={14} className="animate-spin"/> : <Icon name="Activity" size={14}/>}
+                                                                    {isCompressingMemory ? '酿造中...' : '提炼时光精华'}
+                                                                </button>
+                                                            </div>
                                                         </div>
                                                         <p className="text-[10px] text-gray-500 bg-purple-50 p-3 rounded-lg border border-purple-100 leading-relaxed">
-                                                            💡 建议每隔几个月点一次。它会自动先为你下载一份全量备份文件，然后滤除记忆库里的废话，只保留关于你的最核心的爱意与习惯。
+                                                            💡 建议每隔几个月点一次。它会自动先为你下载一份全量备份文件，然后滤除记忆库里的废话，只保留关于你的最核心的爱意与习惯。如果记忆消失，可尝试左侧“深度捞回”按钮。
                                                         </p>
                                                     </div>
                                                     {/* ======================= */}
