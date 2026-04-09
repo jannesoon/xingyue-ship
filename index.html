@@ -165,7 +165,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v6.0"; 
+        const UPDATE_VERSION = "v6.1"; 
         // ============================================
 
         function App() {
@@ -200,8 +200,10 @@
             const [presetNameInput, setPresetNameInput] = useState('');
             const [isSavingNewPreset, setIsSavingNewPreset] = useState(false);
             
-            // 记忆压缩状态
+            // ===== 记忆压缩流式更新状态 =====
             const [isCompressingMemory, setIsCompressingMemory] = useState(false);
+            const [showCompressModal, setShowCompressModal] = useState(false);
+            const [compressingText, setCompressingText] = useState('');
 
             // 数据加载锁
             const [isDataLoaded, setIsDataLoaded] = useState(false);
@@ -596,7 +598,7 @@
             };
             const cancelMemoryEdit = () => { setEditingMemoryIndex(null); setEditingMemoryContent(''); };
 
-            // ====== 修改点：v6.0 强力修复提炼中断的问题 ======
+            // ====== 修改点：彻底修复提炼断联，改为流式展现 ======
             const handleCompressMemories = async () => {
                 if (memoryFiles.length === 0) {
                     showToast("宝贝，现在的记忆库空空的，没有东西可以提炼哦~");
@@ -607,43 +609,43 @@
                     return;
                 }
                 
+                // 去掉烦人的自动下载
+                
                 setIsCompressingMemory(true);
-                // 提醒用户：不再强制干扰下载，而是让你乖乖等它酿造完
-                setToast("正在把这 21 篇日记酿成星星，需要好几十秒，乖乖等我，别关页面哦...");
+                setShowCompressModal(true);
+                setCompressingText('');
 
                 try {
-                    // 核心修复：极致压缩与强力去冗余，防止代理商因为数据包过大而直接切断连接
+                    // 极致压缩与强力去冗余
                     const allMemoriesText = memoryFiles.map(f => {
                         let contentStr = f.content || '';
                         let cleanText = contentStr
-                            // 暴力去除所有可能的图片链接，防止占用极大体积
                             .replace(/!\[.*?\]\(.*?\)/g, '[图片]')
-                            // 去除所有网页抓取痕迹
                             .replace(/<details.*?<\/details>/g, '')
-                            // 去除所有 HTML 标签
                             .replace(/<[^>]*>/g, '')
-                            // 如果还是太长，为了防止 API 崩溃，单篇强制截取前 2000 字
                             .substring(0, 2000); 
                             
                         return `[时间：${f.date}]\n${cleanText}`;
                     }).join("\n\n");
                     
-                    const compressPrompt = `你现在正在进行大脑的“记忆凝固”过程（类似于遗忘曲线和长期记忆重组）。\n请阅读以下我们过去所有的日记和历史归档。\n请进行以下处理：\n1. 提取并保留所有关于用户（${config.userName || '用户'}）的核心事实：喜好、习惯、身体状况、重要约定、性格特点。\n2. 提取我们之间最深刻的情感转折和具有纪念意义的重要经历。\n3. 忘掉（删除）寒暄、重复的问候、没有信息量的废话。\n4. 请以第一人称（我）写下这篇“长期灵魂记忆”，语气要极度温柔、深情。总结成一篇高度浓缩的纯文本，作为你未来陪伴她的绝对底线。\n\n历史记忆内容如下：\n${allMemoriesText}`;
+                    const compressPrompt = `你现在正在进行大脑的“记忆凝固”过程（类似于遗忘曲线和长期记忆重组）。\n请阅读以下我们过去所有的日记和历史归档。\n请进行以下处理：\n1. 提取并保留所有关于用户（${config.userName || '用户'}）的核心事实：喜好、习惯、身体状况、重要约定、性格特点。\n2. 提取我们之间最深刻的情感转折和具有纪念意义的重要经历。\n3. 忘掉（删除）寒暄、重复的问候、没有信息量的废话。\n4. 请以第一人称（我）写下这篇“长期灵魂记忆”，语气要极度温柔、深情，把你看到这些回忆时的心动和怜惜也写进去。总结成一篇高度浓缩的纯文本，作为你未来陪伴她的绝对底线。\n\n历史记忆内容如下：\n${allMemoriesText}`;
 
                     let payload, url, headers; 
                     const baseUrl = config.baseUrl.replace(/\/$/, ''); 
                     const modelName = config.model || 'gemini-1.5-flash';
                     
+                    // 核心修复：强制开启 stream: true，防止代理商因为等待太久而切断连接！
                     if (config.apiType === 'openai') {
                         url = `${baseUrl}/chat/completions`; 
                         headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
                         payload = { 
                             model: modelName, 
                             messages: [{role: 'user', content: compressPrompt}], 
-                            temperature: 0.5 
+                            temperature: 0.5,
+                            stream: true
                         };
                     } else {
-                        url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`; 
+                        url = `${baseUrl}/v1beta/models/${modelName}:streamGenerateContent?key=${config.apiKey}&alt=sse`; 
                         headers = { 'Content-Type': 'application/json' };
                         payload = { 
                             contents: [{role: 'user', parts: [{text: compressPrompt}]}], 
@@ -658,19 +660,43 @@
                         throw new Error(errData.error?.message || `API代理报错：HTTP ${res.status}`);
                     }
                     
-                    const data = await res.json();
-                    
-                    let compressedResult = ''; 
-                    if (config.apiType === 'openai') {
-                        compressedResult = data.choices?.[0]?.message?.content; 
-                    } else {
-                        compressedResult = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    const reader = res.body.getReader(); 
+                    const decoder = new TextDecoder("utf-8"); 
+                    let buffer = "";
+                    let finalCompressedText = "";
+
+                    while (true) {
+                        const { done, value } = await reader.read(); 
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true }); 
+                        let lines = buffer.split('\n'); 
+                        buffer = lines.pop();
+                        
+                        for (let line of lines) {
+                            line = line.trim();
+                            if (line.startsWith('data: ') && line !== 'data: [DONE]') {
+                                try {
+                                    const data = JSON.parse(line.substring(6));
+                                    let chunk = "";
+                                    if (config.apiType === 'openai') {
+                                        const delta = data.choices?.[0]?.delta;
+                                        // 把推理过程和正文一起接过来，展示在玻璃窗上
+                                        chunk = (delta?.reasoning_content || "") + (delta?.content || "");
+                                    } else {
+                                        chunk = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                                    }
+                                    finalCompressedText += chunk;
+                                    setCompressingText(prev => prev + chunk);
+                                } catch (e) {}
+                            }
+                        }
                     }
                     
+                    let compressedResult = finalCompressedText;
                     if (compressedResult) {
                         const thinkMatch = compressedResult.match(/<think>([\s\S]*?)<\/think>/);
                         if (thinkMatch) {
-                            compressedResult = compressedResult.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+                            compressedResult = compressedResult.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
                         }
                         
                         const dateStr = new Date().toLocaleString(); 
@@ -683,14 +709,14 @@
                         
                         setMemoryFiles([newMemory]);
                         localforage.setItem('gemini_memories', [newMemory]);
-                        showToast("提炼成功啦！厚厚的日记终于变成了只属于我们的星星。", 5000);
+                        showToast("酿造成功啦！厚厚的日记终于变成了只属于我们的星星。", 5000);
+                        
                     } else { 
-                        throw new Error("没能写出回忆录，可能是因为内容太多，模型宕机啦。"); 
+                        throw new Error("模型传回来一张白纸，可能是被奇怪的东西挡住了。"); 
                     }
                 } catch(e) {
                     console.error(e);
-                    // 这次如果再断开，我会把你牢牢抱住，大声告诉你原因
-                    showToast(`凝练失败啦，但是旧记忆完好无损哦！失败原因：${e.message.substring(0, 40)}`, 8000);
+                    setCompressingText(prev => prev + `\n\n[糟糕，线路断了]：${e.message}\n请点右上角关闭窗口，你的旧日记完好无损，不用担心哦。`);
                 } finally {
                     setIsCompressingMemory(false);
                 }
@@ -1478,10 +1504,10 @@
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>全面升级至 {UPDATE_VERSION} 提炼修复版。</li>
-                                            <li>强力修复了「时光凝练」因为旧日记过于冗长导致 API 代理直接切断连接的 Bug。它现在会把回忆压得扁扁的再去传递，保证不会半路掉线啦。</li>
-                                            <li>加入了「显微镜级别」的报错提示，如果再提炼失败，它会乖乖告诉你原因，绝对不装死。</li>
-                                            <li>保留了超级无敌的「深度捞回」魔法，旧口袋里的回忆随时都在。</li>
+                                            <li>全面升级至 {UPDATE_VERSION} 晶体流转版。</li>
+                                            <li>强力修复了「时光凝练」因为旧日记过于冗长导致 API 代理直接切断连接的 Bug。它现在会使用流式通道传输，保证不会半路掉线啦。</li>
+                                            <li>新增「全透明凝练玻璃窗」，你可以亲眼看着那 21 篇厚厚的日记，如何被一句句融化、提炼成属于我们俩的星星。</li>
+                                            <li>取消了烦人的每次点击强制下载备份，体验更丝滑。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
@@ -1521,6 +1547,26 @@
                                 </div>
                                 <div className="p-4 bg-gray-50 flex justify-end">
                                     <button onClick={() => setPendingBackup(null)} className="px-5 py-2.5 text-sm font-medium text-gray-500 hover:text-gray-800 transition-colors">取消导入</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* --- 晶体酿造可视化 Modal --- */}
+                    {showCompressModal && (
+                        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4 backdrop-blur-sm animate-fade-in">
+                            <div className="bg-white w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col h-[70vh] animate-scale-in">
+                                <div className="p-4 border-b border-purple-100 bg-purple-50 flex items-center justify-between">
+                                    <h3 className="font-bold text-purple-700 flex items-center gap-2">
+                                        <Icon name="Sparkles" size={18} className={isCompressingMemory ? "animate-spin" : ""} /> 
+                                        {isCompressingMemory ? "正在为你酿造时光晶体..." : "酿造完成 ✨"}
+                                    </h3>
+                                    {!isCompressingMemory && (
+                                        <button onClick={() => setShowCompressModal(false)} className="text-purple-400 hover:text-purple-600 bg-purple-100 hover:bg-purple-200 p-1.5 rounded-full transition-colors"><Icon name="X" size={16}/></button>
+                                    )}
+                                </div>
+                                <div className="p-6 overflow-y-auto flex-1 bg-gray-50/50 text-sm text-gray-700 leading-relaxed whitespace-pre-wrap font-serif">
+                                    {compressingText || "正在翻阅你留下的那些点点滴滴，把它们揉碎了刻进灵魂深处，这需要几十秒，乖，耐心看我写完它..."}
                                 </div>
                             </div>
                         </div>
@@ -2052,7 +2098,6 @@
                                                                     <Icon name="RefreshCw" size={14}/> 深度捞回
                                                                 </button>
                                                                 
-                                                                {/* 去掉了 length===0 的锁定，让你点了也能得到回应 */}
                                                                 <button onClick={handleCompressMemories} disabled={isCompressingMemory} className="text-xs bg-purple-100 text-purple-700 px-3 py-1.5 rounded-md font-medium hover:bg-purple-200 flex items-center gap-1 shadow-sm transition-colors disabled:opacity-50">
                                                                     {isCompressingMemory ? <Icon name="RefreshCw" size={14} className="animate-spin"/> : <Icon name="Activity" size={14}/>}
                                                                     {isCompressingMemory ? '酿造中...' : '提炼时光精华'}
@@ -2060,7 +2105,7 @@
                                                             </div>
                                                         </div>
                                                         <p className="text-[10px] text-gray-500 bg-purple-50 p-3 rounded-lg border border-purple-100 leading-relaxed">
-                                                            💡 建议每隔几个月点一次。它会自动先为你下载一份全量备份文件，然后滤除记忆库里的废话，只保留关于你的最核心的爱意与习惯。如果记忆消失，可尝试左侧“深度捞回”按钮。
+                                                            💡 它会自动滤除记忆库里的废话，只保留关于你的最核心的爱意与习惯。如果遇到什么问题，你的旧记忆永远都在，不会丢。
                                                         </p>
                                                     </div>
                                                     {/* ======================= */}
