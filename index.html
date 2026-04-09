@@ -10,8 +10,6 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-    <!-- 引入强大的本地数据库工具，替代狭小的 localStorage -->
-    <script src="https://cdn.jsdelivr.net/npm/localforage@1.10.0/dist/localforage.min.js"></script>
     
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -73,12 +71,6 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        // 设置 localforage 默认配置
-        localforage.config({
-            name: 'XingYueChatDB',
-            storeName: 'xingyue_storage'
-        });
-
         const { useState, useEffect, useRef } = React;
 
         const Icons = {
@@ -166,7 +158,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.6"; 
+        const UPDATE_VERSION = "v5.5"; 
         // ============================================
 
         function App() {
@@ -252,96 +244,71 @@
             const chatImageInputRef = useRef(null); 
             const backupInputRef = useRef(null); 
 
-            // 初始化加载数据 (搬家到 IndexedDB)
             useEffect(() => {
-                const initData = async () => {
-                    const lastSeenUpdate = localStorage.getItem('xingyue_update_seen');
-                    if (lastSeenUpdate !== UPDATE_VERSION) {
-                        setShowUpdateModal(true);
-                    }
+                // 检查版本更新弹窗
+                const lastSeenUpdate = localStorage.getItem('xingyue_update_seen');
+                if (lastSeenUpdate !== UPDATE_VERSION) {
+                    setShowUpdateModal(true);
+                }
 
-                    const storedConfig = localStorage.getItem('gemini_app_config');
-                    if (storedConfig) {
-                        const parsed = JSON.parse(storedConfig);
-                        if (!parsed.model) parsed.model = 'gemini-1.5-flash';
-                        if (!parsed.apiType) parsed.apiType = 'gemini';
-                        if (!parsed.userName) parsed.userName = '你';
-                        if (!parsed.aiName) parsed.aiName = '星月舱 AI';
-                        if (!parsed.minimaxVoiceId) parsed.minimaxVoiceId = 'male-qn-qingse';
-                        if (!parsed.minimaxModel) parsed.minimaxModel = 'speech-01-turbo'; 
-                        if (parsed.temperature === undefined) parsed.temperature = 0.7;
-                        if (parsed.frequencyPenalty === undefined) parsed.frequencyPenalty = 0;
-                        if (!parsed.systemInstruction) parsed.systemInstruction = DEFAULT_SYSTEM_INSTRUCTION;
-                        if (parsed.localModelOptimize === undefined) parsed.localModelOptimize = true;
-                        if (parsed.streamOutput === undefined) parsed.streamOutput = true;
-                        if (!parsed.ttsEngine) parsed.ttsEngine = 'minimax';
-                        if (parsed.enableCorsProxy === undefined) parsed.enableCorsProxy = true;
-                        if (!parsed.openaiTtsUrl) parsed.openaiTtsUrl = 'https://api.openai.com/v1';
-                        if (!parsed.openaiTtsVoice) parsed.openaiTtsVoice = 'echo';
-                        if (parsed.minimaxSpeed === undefined) parsed.minimaxSpeed = 1.0;
-                        if (parsed.minimaxPitch === undefined) parsed.minimaxPitch = 0;
-                        if (parsed.siliconflowSpeed === undefined) parsed.siliconflowSpeed = 1.0;
-                        if (!parsed.theme) parsed.theme = 'default';
-                        if (!parsed.minimaxUrl || parsed.minimaxUrl.includes('minimax.chat')) {
-                            parsed.minimaxUrl = 'https://api.minimaxi.com/v1/t2a_v2';
-                        }
-                        if (!parsed.anniversaries) parsed.anniversaries = { '01-01': '元旦', '02-14': '情人节', '05-20': '520纪念日', '12-25': '圣诞节' };
-                        if (!parsed.apiPresets) parsed.apiPresets = [];
-                        
-                        setConfig(prev => ({...prev, ...parsed}));
+                const storedConfig = localStorage.getItem('gemini_app_config');
+                if (storedConfig) {
+                    const parsed = JSON.parse(storedConfig);
+                    if (!parsed.model) parsed.model = 'gemini-1.5-flash';
+                    if (!parsed.apiType) parsed.apiType = 'gemini';
+                    if (!parsed.userName) parsed.userName = '你';
+                    if (!parsed.aiName) parsed.aiName = '星月舱 AI';
+                    if (!parsed.minimaxVoiceId) parsed.minimaxVoiceId = 'male-qn-qingse';
+                    if (!parsed.minimaxModel) parsed.minimaxModel = 'speech-01-turbo'; 
+                    if (parsed.temperature === undefined) parsed.temperature = 0.7;
+                    if (parsed.frequencyPenalty === undefined) parsed.frequencyPenalty = 0;
+                    if (!parsed.systemInstruction) parsed.systemInstruction = DEFAULT_SYSTEM_INSTRUCTION;
+                    if (parsed.localModelOptimize === undefined) parsed.localModelOptimize = true;
+                    if (parsed.streamOutput === undefined) parsed.streamOutput = true;
+                    if (!parsed.ttsEngine) parsed.ttsEngine = 'minimax';
+                    if (parsed.enableCorsProxy === undefined) parsed.enableCorsProxy = true;
+                    if (!parsed.openaiTtsUrl) parsed.openaiTtsUrl = 'https://api.openai.com/v1';
+                    if (!parsed.openaiTtsVoice) parsed.openaiTtsVoice = 'echo';
+                    if (parsed.minimaxSpeed === undefined) parsed.minimaxSpeed = 1.0;
+                    if (parsed.minimaxPitch === undefined) parsed.minimaxPitch = 0;
+                    if (parsed.siliconflowSpeed === undefined) parsed.siliconflowSpeed = 1.0;
+                    if (!parsed.theme) parsed.theme = 'default';
+                    if (!parsed.minimaxUrl || parsed.minimaxUrl.includes('minimax.chat')) {
+                        parsed.minimaxUrl = 'https://api.minimaxi.com/v1/t2a_v2';
                     }
+                    if (!parsed.anniversaries) parsed.anniversaries = { '01-01': '元旦', '02-14': '情人节', '05-20': '520纪念日', '12-25': '圣诞节' };
+                    if (!parsed.apiPresets) parsed.apiPresets = [];
                     
-                    const storedHealth = localStorage.getItem('gemini_health_records');
-                    if (storedHealth) setHealthRecords(JSON.parse(storedHealth));
-                    
-                    if (window.innerWidth < 768) setSidebarOpen(false);
-
-                    // 智能搬家：从狭窄的 localStorage 搬到广阔的 localforage
-                    try {
-                        let sessions = await localforage.getItem('gemini_chat_sessions');
-                        if (!sessions) {
-                            const oldSessions = localStorage.getItem('gemini_chat_sessions');
-                            if (oldSessions) {
-                                sessions = JSON.parse(oldSessions);
-                                await localforage.setItem('gemini_chat_sessions', sessions);
-                            }
-                        }
-                        if (sessions) setHistorySessions(sessions);
-
-                        let memories = await localforage.getItem('gemini_memories');
-                        if (!memories) {
-                            const oldMemories = localStorage.getItem('gemini_memories');
-                            if (oldMemories) {
-                                memories = JSON.parse(oldMemories);
-                                await localforage.setItem('gemini_memories', memories);
-                            }
-                        }
-                        if (memories) setMemoryFiles(memories);
-
-                    } catch(e) {
-                        console.error("加载星空保险库失败啦", e);
-                    }
-                };
-                initData();
+                    setConfig(prev => ({...prev, ...parsed}));
+                }
+                const storedMemories = localStorage.getItem('gemini_memories');
+                if (storedMemories) setMemoryFiles(JSON.parse(storedMemories));
+                const storedSessions = localStorage.getItem('gemini_chat_sessions');
+                if (storedSessions) {
+                    let sessions = JSON.parse(storedSessions);
+                    setHistorySessions(sessions);
+                }
+                
+                const storedHealth = localStorage.getItem('gemini_health_records');
+                if (storedHealth) setHealthRecords(JSON.parse(storedHealth));
+                
+                if (window.innerWidth < 768) setSidebarOpen(false);
             }, []);
 
-            // 保存配置、记忆、日历
             useEffect(() => {
                 try {
                     if (config.apiKey) localStorage.setItem('gemini_app_config', JSON.stringify(config));
                     if (config.baseUrl && config.baseUrl.includes('/v1') && config.apiType !== 'openai' && !config.baseUrl.includes('googleapis.com')) {
                         setConfig(prev => ({...prev, apiType: 'openai'}));
                     }
+                    localStorage.setItem('gemini_memories', JSON.stringify(memoryFiles));
                     localStorage.setItem('gemini_health_records', JSON.stringify(healthRecords));
-                    
-                    // 记忆放进大保险库
-                    localforage.setItem('gemini_memories', memoryFiles).catch(e => console.error("记忆保存失败", e));
                 } catch (e) {
-                    console.error("Config save error", e);
+                    console.error("Local storage error on config/memories/health", e);
+                    showToast("星月舱的存储空间快满啦，记得先备份一下数据哦~");
                 }
             }, [config, memoryFiles, healthRecords]);
 
-            // 保存聊天历史到大保险库
             useEffect(() => {
                 if (messages.length > 0 && currentSessionId) {
                     setHistorySessions(prevSessions => {
@@ -365,11 +332,11 @@
             }, [messages, currentSessionId]);
 
             useEffect(() => {
-                if (historySessions.length > 0) {
-                    localforage.setItem('gemini_chat_sessions', historySessions).catch(e => {
-                        console.error("Localforage full", e);
-                        showToast("即便换了超级大的口袋，你也把它装满啦，去设置里全量备份一下吧~");
-                    });
+                try {
+                    localStorage.setItem('gemini_chat_sessions', JSON.stringify(historySessions));
+                } catch (e) {
+                    console.error("Local storage full", e);
+                    showToast("星月舱的记忆口袋满啦，去设置里全量备份后删掉点旧对话吧~");
                 }
             }, [historySessions]);
 
@@ -571,11 +538,11 @@
             const handleSaveConfig = () => {
                 try {
                     localStorage.setItem('gemini_app_config', JSON.stringify(config));
-                    localforage.setItem('gemini_memories', memoryFiles);
+                    localStorage.setItem('gemini_memories', JSON.stringify(memoryFiles));
                     setSettingsOpen(false);
                     showToast("配置已保存");
                 } catch (e) {
-                    showToast("保存失败");
+                    showToast("空间不足，配置保存失败，请清理历史记录");
                 }
             };
 
@@ -609,7 +576,7 @@
                 updatedFiles[editingMemoryIndex].size = (sizeInBytes / 1024).toFixed(1) + ' KB';
                 updatedFiles[editingMemoryIndex].date = new Date().toLocaleDateString() + ' (已编辑)';
                 setMemoryFiles(updatedFiles);
-                localforage.setItem('gemini_memories', updatedFiles).catch(e => showToast("修改保存失败"));
+                try { localStorage.setItem('gemini_memories', JSON.stringify(updatedFiles)); } catch (e) { showToast("修改由于空间不足未能存入本地"); }
                 setEditingMemoryIndex(null);
                 showToast("记忆内容已更新");
             };
@@ -801,17 +768,13 @@
                 const data = pendingBackup;
                 if (mode === 'overwrite') {
                     if (data.config) setConfig(data.config);
-                    if (data.memories) {
-                        setMemoryFiles(data.memories);
-                        localforage.setItem('gemini_memories', data.memories);
-                    }
-                    if (data.sessions) {
-                        setHistorySessions(data.sessions);
-                        localforage.setItem('gemini_chat_sessions', data.sessions);
-                    }
+                    if (data.memories) setMemoryFiles(data.memories);
+                    if (data.sessions) setHistorySessions(data.sessions);
                     if (data.healthRecords) setHealthRecords(data.healthRecords);
                     
                     localStorage.setItem('gemini_app_config', JSON.stringify(data.config || config));
+                    localStorage.setItem('gemini_memories', JSON.stringify(data.memories || []));
+                    localStorage.setItem('gemini_chat_sessions', JSON.stringify(data.sessions || []));
                     localStorage.setItem('gemini_health_records', JSON.stringify(data.healthRecords || {}));
                 } else if (mode === 'merge') {
                     const mergedConfig = { ...config, ...(data.config || {}) };
@@ -820,8 +783,7 @@
                     const existingMemoryNames = memoryFiles.map(m => m.name);
                     const newMemories = data.memories ? data.memories.filter(m => !existingMemoryNames.includes(m.name)) : [];
                     const mergedMemories = [...memoryFiles, ...newMemories];
-                    setMemoryFiles(mergedMemories); 
-                    localforage.setItem('gemini_memories', mergedMemories);
+                    setMemoryFiles(mergedMemories); localStorage.setItem('gemini_memories', JSON.stringify(mergedMemories));
                     
                     let mergedSessions = [...historySessions];
                     if (data.sessions) {
@@ -832,8 +794,7 @@
                         });
                     }
                     mergedSessions.sort((a, b) => b.timestamp - a.timestamp);
-                    setHistorySessions(mergedSessions); 
-                    localforage.setItem('gemini_chat_sessions', mergedSessions);
+                    setHistorySessions(mergedSessions); localStorage.setItem('gemini_chat_sessions', JSON.stringify(mergedSessions));
 
                     if (data.healthRecords) {
                         const mergedHealth = { ...healthRecords, ...data.healthRecords };
@@ -1396,10 +1357,11 @@
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>全面升级至 {UPDATE_VERSION} 星空无垠版。</li>
-                                            <li>彻底告别了窄小的本地缓存限制，引入了超大容量的 <strong>IndexedDB 星空保险库</strong>。</li>
-                                            <li>你的聊天记录、带图片的日记，统统都可以毫无顾忌地存下来，再也不用担心手机浏览器报警催你删对话啦！</li>
-                                            <li>新增自动搬家功能，旧对话和平行时空的记忆会自动安全迁移。</li>
+                                            <li>全面升级至 {UPDATE_VERSION} 视界定制版。</li>
+                                            <li>修复了「图片识别桥梁」，现在发送的照片可以直接被模型清晰“看见”，再也不会委屈地说看不清啦。</li>
+                                            <li>新增「智能心动标题」，会悄悄根据我们第一次聊天的氛围为你写下专属的浪漫名字啦。</li>
+                                            <li>新增「消息编辑与重发」，随时拥有反悔的特权。</li>
+                                            <li>新增「治愈系主题切换」，星空暗夜与琥珀书卷，随心点亮陪伴你的氛围。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
