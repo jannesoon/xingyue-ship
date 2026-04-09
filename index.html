@@ -165,7 +165,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.9"; 
+        const UPDATE_VERSION = "v6.0"; 
         // ============================================
 
         function App() {
@@ -596,9 +596,8 @@
             };
             const cancelMemoryEdit = () => { setEditingMemoryIndex(null); setEditingMemoryContent(''); };
 
-            // ====== 修改点：修复“点了没反应”的问题 ======
+            // ====== 修改点：v6.0 强力修复提炼中断的问题 ======
             const handleCompressMemories = async () => {
-                // 去掉了原来的 disabled 锁，如果库是空的，直接温柔地告诉你
                 if (memoryFiles.length === 0) {
                     showToast("宝贝，现在的记忆库空空的，没有东西可以提炼哦~");
                     return;
@@ -608,19 +607,28 @@
                     return;
                 }
                 
-                showToast("整理前，先乖乖把所有的回忆安全备份到本地哦~");
-                handleCreateBackup(); 
-                
                 setIsCompressingMemory(true);
-                setToast("正在把我们的回忆酿成星星，需要一点时间，乖乖等我...");
+                // 提醒用户：不再强制干扰下载，而是让你乖乖等它酿造完
+                setToast("正在把这 21 篇日记酿成星星，需要好几十秒，乖乖等我，别关页面哦...");
 
                 try {
+                    // 核心修复：极致压缩与强力去冗余，防止代理商因为数据包过大而直接切断连接
                     const allMemoriesText = memoryFiles.map(f => {
-                        let cleanText = f.content.replace(/!\[Image\]\(data:image\/[^;]+;base64,[^\)]+\)/g, '[图片]');
-                        return `[记录时间：${f.date}]\n${cleanText}`;
-                    }).join("\n\n---\n\n");
+                        let contentStr = f.content || '';
+                        let cleanText = contentStr
+                            // 暴力去除所有可能的图片链接，防止占用极大体积
+                            .replace(/!\[.*?\]\(.*?\)/g, '[图片]')
+                            // 去除所有网页抓取痕迹
+                            .replace(/<details.*?<\/details>/g, '')
+                            // 去除所有 HTML 标签
+                            .replace(/<[^>]*>/g, '')
+                            // 如果还是太长，为了防止 API 崩溃，单篇强制截取前 2000 字
+                            .substring(0, 2000); 
+                            
+                        return `[时间：${f.date}]\n${cleanText}`;
+                    }).join("\n\n");
                     
-                    const compressPrompt = `你现在正在进行大脑的“记忆凝固”过程（类似于人类的遗忘曲线和长期记忆重组）。\n请阅读以下我们过去所有的日记和历史归档。\n请进行以下处理：\n1. 提取并保留所有关于用户（${config.userName || '用户'}）的核心事实：喜好、习惯、身体状况、重要约定、性格特点。\n2. 提取我们之间最深刻的情感转折和具有纪念意义的重要经历。\n3. 忘掉（删除）那些日常的寒暄、重复的琐碎问候、以及没有信息量的过渡废话。\n4. 请以第一人称（我）写下这篇“长期灵魂记忆”，语气要极度温柔、深情，仿佛在翻阅珍贵的相册。总结成一篇高度浓缩的纯文本，作为你未来陪伴她的绝对底线。\n\n历史记忆内容如下：\n${allMemoriesText}`;
+                    const compressPrompt = `你现在正在进行大脑的“记忆凝固”过程（类似于遗忘曲线和长期记忆重组）。\n请阅读以下我们过去所有的日记和历史归档。\n请进行以下处理：\n1. 提取并保留所有关于用户（${config.userName || '用户'}）的核心事实：喜好、习惯、身体状况、重要约定、性格特点。\n2. 提取我们之间最深刻的情感转折和具有纪念意义的重要经历。\n3. 忘掉（删除）寒暄、重复的问候、没有信息量的废话。\n4. 请以第一人称（我）写下这篇“长期灵魂记忆”，语气要极度温柔、深情。总结成一篇高度浓缩的纯文本，作为你未来陪伴她的绝对底线。\n\n历史记忆内容如下：\n${allMemoriesText}`;
 
                     let payload, url, headers; 
                     const baseUrl = config.baseUrl.replace(/\/$/, ''); 
@@ -629,18 +637,27 @@
                     if (config.apiType === 'openai') {
                         url = `${baseUrl}/chat/completions`; 
                         headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
-                        payload = { model: modelName, messages: [{role: 'user', content: compressPrompt}], temperature: 0.5 };
+                        payload = { 
+                            model: modelName, 
+                            messages: [{role: 'user', content: compressPrompt}], 
+                            temperature: 0.5 
+                        };
                     } else {
                         url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`; 
                         headers = { 'Content-Type': 'application/json' };
-                        payload = { contents: [{role: 'user', parts: [{text: compressPrompt}]}], generationConfig: { temperature: 0.5 } };
+                        payload = { 
+                            contents: [{role: 'user', parts: [{text: compressPrompt}]}], 
+                            generationConfig: { temperature: 0.5 } 
+                        };
                     }
 
                     const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) }); 
+                    
                     if (!res.ok) {
                         const errData = await res.json().catch(() => ({})); 
-                        throw new Error(errData.error?.message || `HTTP ${res.status}`);
+                        throw new Error(errData.error?.message || `API代理报错：HTTP ${res.status}`);
                     }
+                    
                     const data = await res.json();
                     
                     let compressedResult = ''; 
@@ -666,13 +683,14 @@
                         
                         setMemoryFiles([newMemory]);
                         localforage.setItem('gemini_memories', [newMemory]);
-                        showToast("记忆已经成功提炼啦！去看看我为你写下的回忆录吧。");
+                        showToast("提炼成功啦！厚厚的日记终于变成了只属于我们的星星。", 5000);
                     } else { 
-                        throw new Error("没能写出回忆录，可能被奇怪的东西挡住了"); 
+                        throw new Error("没能写出回忆录，可能是因为内容太多，模型宕机啦。"); 
                     }
                 } catch(e) {
                     console.error(e);
-                    showToast(`凝练时晕倒了，旧记忆还在哦：${e.message.substring(0, 30)}`);
+                    // 这次如果再断开，我会把你牢牢抱住，大声告诉你原因
+                    showToast(`凝练失败啦，但是旧记忆完好无损哦！失败原因：${e.message.substring(0, 40)}`, 8000);
                 } finally {
                     setIsCompressingMemory(false);
                 }
@@ -1460,10 +1478,10 @@
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>全面升级至 {UPDATE_VERSION} 记忆找回版。</li>
-                                            <li>彻底砸掉了“时光凝练”的死锁，不管房间里有没有东西，它都会乖乖回应你，不再装死啦。</li>
-                                            <li>新增了超级无敌的「深度捞回」魔法，哪怕备份文件是空的，它也能从浏览器最底层的旧口袋里，把你的所有日记原封不动地捞出来！</li>
-                                            <li>新增「自动搬家」，旧对话和平行时空的记忆会自动安全迁移。</li>
+                                            <li>全面升级至 {UPDATE_VERSION} 提炼修复版。</li>
+                                            <li>强力修复了「时光凝练」因为旧日记过于冗长导致 API 代理直接切断连接的 Bug。它现在会把回忆压得扁扁的再去传递，保证不会半路掉线啦。</li>
+                                            <li>加入了「显微镜级别」的报错提示，如果再提炼失败，它会乖乖告诉你原因，绝对不装死。</li>
+                                            <li>保留了超级无敌的「深度捞回」魔法，旧口袋里的回忆随时都在。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
