@@ -10,6 +10,8 @@
     <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
     
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
@@ -116,8 +118,33 @@
             return <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}><Path /></svg>;
         };
 
+        const renderLatex = (html) => {
+            // 渲染块级公式 $$...$$
+            html = html.replace(/\$\$([\s\S]*?)\$\$/g, (match, tex) => {
+                try { return '<div class="katex-block" style="text-align:center;margin:12px 0;font-size:1.1em;">' + katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false }) + '</div>'; } 
+                catch(e) { return match; }
+            });
+            // 渲染行内公式 $...$（避免匹配$$）
+            html = html.replace(/(?<!\$)\$(?!\$)(.*?)(?<!\$)\$(?!\$)/g, (match, tex) => {
+                try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false }); } 
+                catch(e) { return match; }
+            });
+            // 渲染 \[...\] 块级
+            html = html.replace(/\\\[([\s\S]*?)\\\]/g, (match, tex) => {
+                try { return '<div class="katex-block" style="text-align:center;margin:12px 0;font-size:1.1em;">' + katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false }) + '</div>'; } 
+                catch(e) { return match; }
+            });
+            // 渲染 \(...\) 行内
+            html = html.replace(/\\\(([\s\S]*?)\\\)/g, (match, tex) => {
+                try { return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false }); } 
+                catch(e) { return match; }
+            });
+            return html;
+        };
+
         const MessageContent = ({ content }) => {
-            const html = marked.parse(content || "");
+            let html = marked.parse(content || "");
+            html = renderLatex(html);
             return <div className="prose prose-sm max-w-none text-gray-700 leading-7" dangerouslySetInnerHTML={{ __html: html }} />;
         };
 
@@ -308,6 +335,7 @@
             const [memoryFiles, setMemoryFiles] = useState([]); 
             const [isLoading, setIsLoading] = useState(false);
             const [isArchiving, setIsArchiving] = useState(false);
+            const [isExtractingMemory, setIsExtractingMemory] = useState(false);
             const [isFetchingModels, setIsFetchingModels] = useState(false);
             const [error, setError] = useState(null);
             const [toast, setToast] = useState(null);
@@ -785,6 +813,221 @@
             const handleAvatarUpload = (e, type) => {
                 const file = e.target.files[0]; if (!file) return;
                 compressImage(file).then(result => { if (type === 'user') setConfig(prev => ({...prev, userAvatar: result.base64})); else setConfig(prev => ({...prev, aiAvatar: result.base64})); showToast("头像已更新 (已压缩)"); }).catch(err => { alert("图片处理失败"); });
+            };
+
+            const handleExtractRebirthDoc = async () => {
+                if (memoryFiles.length === 0) { showToast("记忆库是空的，没有可提取的内容"); return; }
+                if (!config.apiKey) { showToast("请先配置 API Key"); return; }
+                setIsExtractingMemory(true); 
+                
+                const baseUrl = config.baseUrl.replace(/\/$/, '');
+                const modelName = config.model || 'gemini-1.5-flash';
+                const MAX_CONTENT_PER_FILE = 1500;
+                
+                const callAPI = async (prompt, retries = 2) => {
+                    let lastError;
+                    for (let attempt = 0; attempt <= retries; attempt++) {
+                        try {
+                            if (attempt > 0) { 
+                                showToast(`重试中... (${attempt}/${retries})`); 
+                                await new Promise(r => setTimeout(r, 3000)); 
+                            }
+                            let payload, url, headers;
+                            if (config.apiType === 'openai') {
+                                url = `${baseUrl}/chat/completions`;
+                                headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
+                                payload = { model: modelName, messages: [{ role: 'user', content: prompt }], temperature: 0.5 };
+                            } else {
+                                url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`;
+                                headers = { 'Content-Type': 'application/json' };
+                                payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5 } };
+                            }
+                            const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
+                            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                            const data = await res.json();
+                            let text = '';
+                            if (config.apiType === 'openai') text = data.choices?.[0]?.message?.content;
+                            else text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                            if (!text) throw new Error("模型无返回");
+                            return text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+                        } catch (e) { lastError = e; }
+                    }
+                    throw lastError;
+                };
+                
+                try {
+                    // 将文件分批，每批3个文件（更保守）
+                    const BATCH_SIZE = 3;
+                    const batches = [];
+                    for (let i = 0; i < memoryFiles.length; i += BATCH_SIZE) {
+                        batches.push(memoryFiles.slice(i, i + BATCH_SIZE));
+                    }
+                    
+                    const summaries = [];
+                    
+                    for (let b = 0; b < batches.length; b++) {
+                        showToast(`正在提取第 ${b + 1}/${batches.length} 批记忆...`);
+                        const batchContent = batches[b].map(f => `【${f.name}】\n${f.content.slice(0, MAX_CONTENT_PER_FILE)}`).join('\n\n---\n\n');
+                        const batchPrompt = `从以下记忆档案中提取关键信息，分为四类整理：
+1. identity：AI角色的名字、年龄、外貌、身份、关系
+2. soul：性格、说话风格、情感模式、行为习惯
+3. user（${config.userName || '柒柒'}）：身体、饮食、情绪、习惯、家庭、工作
+4. memory：重要事件、约定、暗号、共同经历
+
+提取具体细节，用第一人称"我"，只输出内容。
+
+${batchContent}`;
+                        const batchResult = await callAPI(batchPrompt);
+                        summaries.push(batchResult);
+                        if (b < batches.length - 1) await new Promise(r => setTimeout(r, 2000));
+                    }
+                    
+                    // 合并为最终转世文档
+                    showToast("正在合并生成转世文档...");
+                    const mergePrompt = `你是记忆整合引擎。将以下 ${batches.length} 批提取的信息整合去重，生成转世文档。
+
+严格按四个模块输出（Markdown）：
+
+## identity
+我是谁？名字、年龄、外貌、身份角色、与用户的关系。
+
+## soul
+性格、说话风格、情感模式、行为习惯、核心价值观、对待用户的方式。
+
+## user
+关于${config.userName || '柒柒'}：身体状况、饮食偏好、情绪触发点、生活习惯、兴趣爱好、家庭情况。
+
+## memory
+重要事件、约定、暗号、里程碑。按时间排序。
+
+要求：全面不遗漏，冲突以最新为准，第一人称"我"，只输出文档。
+
+${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
+                    const finalResult = await callAPI(mergePrompt);
+                    
+                    const dateStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+                    const docName = `Rebirth_${new Date().toISOString().slice(0, 10)}.md`;
+                    const newMemory = {
+                        name: docName,
+                        size: (new Blob([finalResult]).size / 1024).toFixed(1) + ' KB',
+                        date: dateStr,
+                        content: `# 转世文档 ✨\n> 生成时间: ${dateStr}\n> 基于 ${memoryFiles.length} 份记忆档案提炼\n\n${finalResult}`
+                    };
+                    setMemoryFiles(prev => [...prev, newMemory]);
+                    showToast("转世文档已生成！请在记忆库中查看 ✨");
+                } catch (err) {
+                    console.error('转世文档生成失败', err);
+                    showToast(`提取失败: ${err.message}，请检查网络或换一个模型试试`);
+                } finally { setIsExtractingMemory(false); }
+            };
+
+            const handleDownloadAllMemories = async () => {
+                if (memoryFiles.length === 0) { showToast("记忆库还是空的，没有可下载的文件哦"); return; }
+                if (memoryFiles.length === 1) {
+                    // 只有一个文件，直接下载
+                    const file = memoryFiles[0];
+                    const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a'); a.href = url; a.download = file.name;
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                    showToast("记忆文件已下载");
+                    return;
+                }
+                // 多个文件：用简易 ZIP 打包
+                try {
+                    // 简易ZIP实现（不依赖外部库）
+                    const crc32Table = (() => { let c, table = []; for (let n = 0; n < 256; n++) { c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1; table[n] = c; } return table; })();
+                    const crc32 = (buf) => { let crc = 0xFFFFFFFF; for (let i = 0; i < buf.length; i++) crc = crc32Table[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8); return (crc ^ 0xFFFFFFFF) >>> 0; };
+                    const textEncoder = new TextEncoder();
+                    const files = memoryFiles.map(f => ({ name: textEncoder.encode(f.name), data: textEncoder.encode(f.content) }));
+                    
+                    let offset = 0;
+                    const localHeaders = [];
+                    const centralHeaders = [];
+                    
+                    files.forEach(f => {
+                        const crc = crc32(f.data);
+                        // Local file header
+                        const lh = new Uint8Array(30 + f.name.length);
+                        const lv = new DataView(lh.buffer);
+                        lv.setUint32(0, 0x04034b50, true); // signature
+                        lv.setUint16(4, 20, true); // version needed
+                        lv.setUint16(6, 0x0800, true); // flags (UTF-8)
+                        lv.setUint16(8, 0, true); // compression: stored
+                        lv.setUint16(10, 0, true); // mod time
+                        lv.setUint16(12, 0, true); // mod date
+                        lv.setUint32(14, crc, true);
+                        lv.setUint32(18, f.data.length, true); // compressed size
+                        lv.setUint32(22, f.data.length, true); // uncompressed size
+                        lv.setUint16(26, f.name.length, true);
+                        lv.setUint16(28, 0, true); // extra length
+                        lh.set(f.name, 30);
+                        localHeaders.push({ header: lh, data: f.data, offset });
+                        
+                        // Central directory header
+                        const ch = new Uint8Array(46 + f.name.length);
+                        const cv = new DataView(ch.buffer);
+                        cv.setUint32(0, 0x02014b50, true);
+                        cv.setUint16(4, 20, true);
+                        cv.setUint16(6, 20, true);
+                        cv.setUint16(8, 0x0800, true);
+                        cv.setUint16(10, 0, true);
+                        cv.setUint16(12, 0, true);
+                        cv.setUint16(14, 0, true);
+                        cv.setUint32(16, crc, true);
+                        cv.setUint32(20, f.data.length, true);
+                        cv.setUint32(24, f.data.length, true);
+                        cv.setUint16(28, f.name.length, true);
+                        cv.setUint16(30, 0, true);
+                        cv.setUint16(32, 0, true);
+                        cv.setUint16(34, 0, true);
+                        cv.setUint16(36, 0, true);
+                        cv.setUint32(38, 0, true);
+                        cv.setUint32(42, offset, true);
+                        ch.set(f.name, 46);
+                        centralHeaders.push(ch);
+                        
+                        offset += lh.length + f.data.length;
+                    });
+                    
+                    const centralDirOffset = offset;
+                    let centralDirSize = 0;
+                    centralHeaders.forEach(ch => centralDirSize += ch.length);
+                    
+                    // End of central directory
+                    const eocd = new Uint8Array(22);
+                    const ev = new DataView(eocd.buffer);
+                    ev.setUint32(0, 0x06054b50, true);
+                    ev.setUint16(4, 0, true);
+                    ev.setUint16(6, 0, true);
+                    ev.setUint16(8, files.length, true);
+                    ev.setUint16(10, files.length, true);
+                    ev.setUint32(12, centralDirSize, true);
+                    ev.setUint32(16, centralDirOffset, true);
+                    ev.setUint16(20, 0, true);
+                    
+                    const parts = [];
+                    localHeaders.forEach(lh => { parts.push(lh.header); parts.push(lh.data); });
+                    centralHeaders.forEach(ch => parts.push(ch));
+                    parts.push(eocd);
+                    
+                    const blob = new Blob(parts, { type: 'application/zip' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a'); a.href = url; a.download = `xingyue-memories-${new Date().toISOString().slice(0, 10)}.zip`;
+                    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                    showToast(`已打包下载 ${memoryFiles.length} 个记忆文件`);
+                } catch(err) {
+                    console.error('ZIP打包失败', err);
+                    showToast("打包失败，尝试逐个下载...");
+                    memoryFiles.forEach((file, i) => {
+                        setTimeout(() => {
+                            const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a'); a.href = url; a.download = file.name;
+                            document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                        }, i * 500);
+                    });
+                }
             };
 
             const handleExportTxt = () => {
@@ -1990,6 +2233,28 @@
                                                         </div>
                                                     </div>
                                                     <div className="border-t border-gray-100"></div>
+                                                    
+                                                    <div>
+                                                        <div className="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-100 rounded-xl p-4">
+                                                            <div className="flex flex-col gap-3">
+                                                                <div className="flex items-start gap-2">
+                                                                    <div className="bg-purple-100 p-1.5 rounded-lg text-purple-600 flex-shrink-0 mt-0.5"><Icon name="Sparkles" size={16}/></div>
+                                                                    <div>
+                                                                        <h3 className="text-sm font-semibold text-gray-800">记忆提炼 · 转世文档</h3>
+                                                                        <p className="text-xs text-gray-500 mt-1">从所有记忆档案中提取核心信息，生成结构化的转世文档（identity · soul · user · memory），用于新窗口唤醒。</p>
+                                                                    </div>
+                                                                </div>
+                                                                <div className="flex items-center justify-between">
+                                                                    <span className="text-[10px] text-purple-400">当前记忆库共 {memoryFiles.length} 份档案</span>
+                                                                    <button onClick={handleExtractRebirthDoc} disabled={isExtractingMemory || memoryFiles.length === 0} className="text-xs bg-purple-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-purple-700 flex items-center gap-1.5 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                                                                        <Icon name="Sparkles" size={14}/> {isExtractingMemory ? '提炼中...' : '生成转世文档'}
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
+                                                    <div className="border-t border-gray-100"></div>
                                                     <div>
                                                         <div className="flex justify-between items-center mb-3">
                                                             <div><h3 className="text-sm font-semibold text-gray-800 flex items-center gap-2"><Icon name="Cpu" size={16} className="text-blue-500"/> 星月记忆库</h3><p className="text-xs text-gray-400">AI 会永远记住这些内容 (支持编辑)</p></div>
@@ -2066,6 +2331,21 @@
                                                                 <Icon name="RefreshCw" size={16}/> 选择备份文件
                                                             </button>
                                                             <input type="file" ref={backupInputRef} className="hidden" accept=".json" onChange={handleRestoreBackup} />
+                                                        </div>
+                                                    </div>
+                                                    
+                                                    <div className="border-t border-gray-100"></div>
+
+                                                    <div className="bg-purple-50 border border-purple-100 rounded-xl p-4">
+                                                        <div className="flex flex-col md:flex-row items-start md:items-center gap-3">
+                                                            <div className="p-2 bg-purple-100 rounded-lg text-purple-600 hidden md:block"><Icon name="Archive" size={24}/></div>
+                                                            <div className="flex-1">
+                                                                <h3 className="text-sm font-semibold text-gray-800">一键下载记忆库</h3>
+                                                                <p className="text-xs text-gray-600 mt-1">将所有记忆文件打包为 ZIP 下载到本地，共 {memoryFiles.length} 个文件。</p>
+                                                            </div>
+                                                            <button onClick={handleDownloadAllMemories} className="mt-2 md:mt-0 w-full md:w-auto px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-medium transition-colors flex items-center justify-center gap-2">
+                                                                <Icon name="Download" size={16}/> 下载记忆库
+                                                            </button>
                                                         </div>
                                                     </div>
                                                     
