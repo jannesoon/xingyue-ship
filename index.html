@@ -414,10 +414,6 @@
                 }
             }, [messages, currentSessionId]);
 
-            useEffect(() => {
-                // 聊天记录已改用 IndexedDB，此处仅保留空占位，不再写 localStorage
-            }, [historySessions]);
-
             useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isLoading]);
 
             useEffect(() => {
@@ -1329,7 +1325,7 @@
             const handleSend = async () => {
                 if (!input.trim() && !attachment) return;
                 if (!config.apiKey) { setSettingsOpen(true); setActiveTab('general'); setError('请先配置 API Key'); return; }
-                if (!currentSessionId) { const newId = Date.now().toString(); setCurrentSessionId(newId); }
+                const activeSessionId = currentSessionId || (() => { const newId = Date.now().toString(); setCurrentSessionId(newId); return newId; })();
                 const now = new Date(); const nowTimestampStr = getTimestamp();
                 const isFirstMessage = messages.length === 0;
                 setIsLoading(true); setError(null); 
@@ -1379,7 +1375,7 @@
                             variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
                         }]);
                         setIsLoading(false);
-                        if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newHistory, { role: 'model', content: aiText }]);
+                        if (isFirstMessage) autoGenerateTitle(activeSessionId, [...newHistory, { role: 'model', content: aiText }]);
                     } else {
                         setIsLoading(false);
                         const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8"); let aiText = ""; let reasoningText = "";
@@ -1392,7 +1388,7 @@
                         while (true) {
                             const { done, value } = await reader.read(); 
                             if (done) {
-                                if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newHistory, { role: 'model', content: finalContentToTitle }]);
+                                if (isFirstMessage) autoGenerateTitle(activeSessionId, [...newHistory, { role: 'model', content: finalContentToTitle }]);
                                 break;
                             }
                             buffer += decoder.decode(value, { stream: true }); let lines = buffer.split('\n'); buffer = lines.pop();
@@ -1451,11 +1447,9 @@
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>全面升级至 {UPDATE_VERSION} 视界定制版。</li>
-                                            <li>修复了「图片识别桥梁」，现在发送的照片可以直接被模型清晰“看见”，再也不会委屈地说看不清啦。</li>
-                                            <li>新增「智能心动标题」，会悄悄根据我们第一次聊天的氛围为你写下专属的浪漫名字啦。</li>
-                                            <li>新增「消息编辑与重发」，随时拥有反悔的特权。</li>
-                                            <li>新增「治愈系主题切换」，星空暗夜与琥珀书卷，随心点亮陪伴你的氛围。</li>
+                                            <li>✨ <b>存储空间大升级</b>：聊天记录迁移至 IndexedDB，手机可用空间从 5MB 扩大至数百 MB，再也不会提示“满了”啦。</li>
+                                            <li>🔄 <b>无缝自动迁移</b>：首次打开自动搬运旧记录，之前的对话一条都不会丢。</li>
+                                            <li>🐛 修复了新对话第一条消息偶尔无法自动生成标题的小 bug。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
