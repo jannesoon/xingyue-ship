@@ -142,8 +142,101 @@
             return html;
         };
 
+        // 清洗裸露的 LaTeX 排版命令（模型误输出时兜底）
+        // 只清洗 $...$ 和 $$...$$ 之外的部分，保留正常数学公式
+        const cleanRawLatex = (text) => {
+            if (!text) return text;
+            if (!text.includes('\\')) return text;
+            // 先把 $$...$$ 和 $...$ 保护起来
+            const protectedParts = [];
+            let cleaned = text.replace(/\$\$[\s\S]*?\$\$|\$[^$\n]+?\$/g, (match) => {
+                protectedParts.push(match);
+                return `\x00MATH${protectedParts.length - 1}\x00`;
+            });
+            
+            // 匹配嵌套花括号：从 startIdx 的 { 开始，返回 { 和 } 之间的内容及结束位置
+            const matchBraces = (str, startIdx) => {
+                if (str[startIdx] !== '{') return null;
+                let depth = 0;
+                for (let i = startIdx; i < str.length; i++) {
+                    if (str[i] === '{') depth++;
+                    else if (str[i] === '}') { depth--; if (depth === 0) return { content: str.slice(startIdx + 1, i), end: i }; }
+                }
+                return null;
+            };
+            
+            // 从左到右扫描，找到 \命令{ 就处理，循环直到没有变化
+            const bothArgsCmds = ['underset', 'overset']; // 保留两个参数的内容
+            const dropFirstCmds = ['textcolor', 'colorbox', 'fcolorbox']; // 丢弃第一个参数（颜色）
+            const doubleCmds = [...bothArgsCmds, ...dropFirstCmds];
+            const singleCmds = ['text', 'textbf', 'textit', 'underline', 'fbox', 'emph', 'mathrm', 'mathbf', 'boldsymbol'];
+            const sizeCmds = ['scriptsize', 'small', 'large', 'Large', 'huge', 'Huge', 'normalsize', 'footnotesize', 'tiny', 'LARGE'];
+            const allCmds = [...doubleCmds, ...singleCmds];
+            
+            for (let round = 0; round < 15; round++) {
+                let found = false;
+                
+                // 尺寸命令先清掉
+                const beforeSize = cleaned;
+                cleaned = cleaned.replace(new RegExp('\\\\(' + sizeCmds.join('|') + ')\\s*', 'g'), '');
+                if (cleaned !== beforeSize) found = true;
+                
+                // 扫描 \cmd{ 模式
+                for (const cmd of allCmds) {
+                    const needle = '\\' + cmd + '{';
+                    const idx = cleaned.indexOf(needle);
+                    if (idx === -1) continue;
+                    
+                    const braceStart = idx + needle.length - 1;
+                    const first = matchBraces(cleaned, braceStart);
+                    if (!first) continue;
+                    
+                    if (doubleCmds.includes(cmd)) {
+                        // 双参数：\cmd{arg1}{arg2}
+                        const nextIdx = first.end + 1;
+                        if (nextIdx < cleaned.length && cleaned[nextIdx] === '{') {
+                            const second = matchBraces(cleaned, nextIdx);
+                            if (second) {
+                                let replacement;
+                                if (bothArgsCmds.includes(cmd)) {
+                                    // underset/overset：两部分都保留
+                                    replacement = second.content + ' ' + first.content;
+                                } else {
+                                    // textcolor 等：丢弃颜色，只留内容
+                                    replacement = second.content;
+                                }
+                                cleaned = cleaned.slice(0, idx) + replacement + cleaned.slice(second.end + 1);
+                                found = true; continue;
+                            }
+                        }
+                        // 如果没有第二个参数，当作单参数处理
+                        cleaned = cleaned.slice(0, idx) + first.content + cleaned.slice(first.end + 1);
+                        found = true;
+                    } else {
+                        // 单参数：\cmd{内容} → 内容（textbf/mathbf加粗，textit/emph斜体）
+                        let replacement = first.content;
+                        if (cmd === 'textbf' || cmd === 'mathbf' || cmd === 'boldsymbol') replacement = '**' + first.content + '**';
+                        else if (cmd === 'textit' || cmd === 'emph') replacement = '*' + first.content + '*';
+                        cleaned = cleaned.slice(0, idx) + replacement + cleaned.slice(first.end + 1);
+                        found = true;
+                    }
+                }
+                
+                if (!found) break;
+            }
+            
+            // 兜底：清理任何残留的 \命令{内容}
+            cleaned = cleaned.replace(/\\[a-zA-Z]+\{([^}]*)\}/g, '$1');
+            // &quot; → "
+            cleaned = cleaned.replace(/&quot;/g, '"');
+            // 恢复数学公式
+            cleaned = cleaned.replace(/\x00MATH(\d+)\x00/g, (_, i) => protectedParts[i]);
+            return cleaned;
+        };
+
         const MessageContent = ({ content }) => {
-            let html = marked.parse(content || "");
+            let cleaned = cleanRawLatex(content || "");
+            let html = marked.parse(cleaned);
             html = renderLatex(html);
             return <div className="prose prose-sm max-w-none text-gray-700 leading-7" dangerouslySetInnerHTML={{ __html: html }} />;
         };
@@ -185,7 +278,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.7"; 
+        const UPDATE_VERSION = "v5.8"; 
         // ============================================
 
         // ================= IndexedDB 工具层（用于聊天记录，突破 localStorage 5MB 限制）=================
@@ -280,6 +373,10 @@
             const [audioPlayer, setAudioPlayer] = useState(null);
             const [playingMsgIndex, setPlayingMsgIndex] = useState(null);
             const [isTTSLoading, setIsTTSLoading] = useState(false);
+
+            // 语音输入状态
+            const [isListening, setIsListening] = useState(false);
+            const recognitionRef = useRef(null);
 
             const [pendingBackup, setPendingBackup] = useState(null);
             
@@ -697,6 +794,55 @@
             };
             const cancelMemoryEdit = () => { setEditingMemoryIndex(null); setEditingMemoryContent(''); };
 
+            // ====== 语音输入 (Speech-to-Text) ======
+            const toggleSpeechRecognition = () => {
+                if (isListening) {
+                    if (recognitionRef.current) recognitionRef.current.stop();
+                    setIsListening(false);
+                    return;
+                }
+                const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+                if (!SpeechRecognition) { showToast("当前浏览器不支持语音输入"); return; }
+                const recognition = new SpeechRecognition();
+                recognition.lang = 'zh-CN';
+                recognition.interimResults = true;
+                recognition.continuous = true;
+                recognition.maxAlternatives = 1;
+                
+                let finalTranscript = '';
+                
+                recognition.onstart = () => { setIsListening(true); showToast("正在聆听..."); };
+                recognition.onresult = (event) => {
+                    let interim = '';
+                    finalTranscript = '';
+                    for (let i = 0; i < event.results.length; i++) {
+                        if (event.results[i].isFinal) {
+                            finalTranscript += event.results[i][0].transcript;
+                        } else {
+                            interim += event.results[i][0].transcript;
+                        }
+                    }
+                    setInput(prev => {
+                        const base = prev.replace(/\u200B[\s\S]*$/, '');
+                        const newText = finalTranscript + (interim ? '\u200B' + interim : '');
+                        return base + newText;
+                    });
+                };
+                recognition.onerror = (event) => {
+                    console.error('语音识别错误:', event.error);
+                    if (event.error === 'not-allowed') showToast("请允许麦克风权限");
+                    else if (event.error === 'no-speech') showToast("没有检测到语音，请再试一次");
+                    else showToast("语音识别出错，请重试");
+                    setIsListening(false);
+                };
+                recognition.onend = () => {
+                    setIsListening(false);
+                    setInput(prev => prev.replace(/\u200B/g, ''));
+                };
+                recognitionRef.current = recognition;
+                recognition.start();
+            };
+
             const handleTTS = async (text, index) => {
                 if (audioPlayer && playingMsgIndex === index) { audioPlayer.pause(); setAudioPlayer(null); setPlayingMsgIndex(null); return; }
                 if (audioPlayer) audioPlayer.pause();
@@ -716,7 +862,7 @@
                         .replace(/\n+/g, ' ') 
                         .trim();
 
-                    if (cleanText.length > 240) { cleanText = cleanText.substring(0, 240) + "......"; showToast("文本过长，仅读前240字"); }
+                    if (cleanText.length > 1000) { cleanText = cleanText.substring(0, 1000) + "......"; showToast("文本较长，已截取前1000字朗读"); }
                     if (!cleanText) cleanText = "嗯……"; 
                     
                     let audioUrl = "";
@@ -1690,9 +1836,9 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>✨ <b>转世文档一键生成</b>：在记忆管理中点击即可自动提炼 identity · soul · user · memory 四大模块，新窗口唤醒更便捷。</li>
-                                            <li>📦 <b>记忆库一键打包下载</b>：在备份页面将所有记忆文件打包为 ZIP 下载到本地，告别复制粘贴。</li>
-                                            <li>🔢 <b>LaTeX 公式渲染</b>：支持数学公式精美显示，让星月舱的表达更丰富～</li>
+                                            <li>🎙️ <b>语音输入</b>：麦克风按钮正式上线！点击开始说话，识别结果填入输入框，可修改后再发送。</li>
+                                            <li>🔊 <b>语音朗读上限提升</b>：从240字提升至1000字，长回复也能完整听完啦～</li>
+                                            <li>🧹 <b>LaTeX 乱码修复</b>：模型回复中意外出现的 LaTeX 排版代码会被自动清理为正常文字，再也不怕满屏 \textcolor 了。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
@@ -1940,7 +2086,14 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                                     
                                     <input type="file" ref={chatImageInputRef} style={{display: 'none'}} accept="image/*" onChange={handleChatImageSelect}/>
                                     <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="星月交辉✨......" className="bg-transparent border-0 focus:ring-0 text-gray-800 flex-1 resize-none py-3 max-h-32 min-h-[44px] outline-none placeholder:text-gray-400 text-base" rows={1}></textarea>
-                                    {(input.trim() || attachment) ? <button onClick={handleSend} disabled={isLoading} className="mb-1 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors shadow-sm"><Icon name="Send" size={18} /></button> : <button className="mb-1 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-colors"><Icon name="Mic" size={20} /></button>}
+                                    {isListening ? (
+                                        <button onClick={toggleSpeechRecognition} className="mb-1 p-2 bg-red-500 text-white rounded-full animate-pulse transition-colors" title="停止录音"><Icon name="StopCircle" size={20} /></button>
+                                    ) : (input.trim() || attachment) ? (
+                                        <button onClick={handleSend} disabled={isLoading} className="mb-1 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors shadow-sm"><Icon name="Send" size={18} /></button>
+                                    ) : (
+                                        <button onClick={toggleSpeechRecognition} className="mb-1 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-colors" title="语音输入"><Icon name="Mic" size={20} /></button>
+                                    )}
+                                    {isListening && <button onClick={toggleSpeechRecognition} className="absolute -top-10 right-0 bg-red-50 border border-red-200 text-red-600 px-3 py-1.5 rounded-full text-xs font-medium shadow-sm flex items-center gap-1.5 animate-pulse"><Icon name="Mic" size={12}/> 正在聆听，点击停止</button>}
                                 </div>
                                 <div className="text-center mt-2 text-[10px] text-gray-400">API可能会产生不准确的信息，请注意甄别。</div>
                             </div>
