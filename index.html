@@ -278,7 +278,7 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.8"; 
+        const UPDATE_VERSION = "v5.9"; 
         // ============================================
 
         // ================= IndexedDB 工具层（用于聊天记录，突破 localStorage 5MB 限制）=================
@@ -361,7 +361,7 @@
             const [messages, setMessages] = useState([]);
             const [historySessions, setHistorySessions] = useState([]);
             const [currentSessionId, setCurrentSessionId] = useState(null);
-            const [attachment, setAttachment] = useState(null); 
+            const [attachments, setAttachments] = useState([]); 
             
             const [editingSessionId, setEditingSessionId] = useState(null);
             const [editTitle, setEditTitle] = useState('');
@@ -752,12 +752,12 @@
 
             const createNewSession = () => {
                 if (messages.length === 0 && !currentSessionId) return;
-                setMessages([]); setAttachment(null); setCurrentSessionId(Date.now().toString());
+                setMessages([]); setAttachments([]); setCurrentSessionId(Date.now().toString());
                 if (window.innerWidth < 768) setSidebarOpen(false);
             };
 
             const loadSession = (session) => {
-                setMessages(session.messages); setCurrentSessionId(session.id); setAttachment(null);
+                setMessages(session.messages); setCurrentSessionId(session.id); setAttachments([]);
                 if (window.innerWidth < 768) setSidebarOpen(false);
             };
             
@@ -1318,7 +1318,7 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
             };
 
             const triggerImageUpload = () => { if (chatImageInputRef.current) { chatImageInputRef.current.value = ""; chatImageInputRef.current.click(); } };
-            const handleChatImageSelect = (e) => { const file = e.target.files[0]; if (!file) return; compressImage(file).then(result => { setAttachment(result); }); };
+            const handleChatImageSelect = (e) => { const files = Array.from(e.target.files); if (!files.length) return; Promise.all(files.map(f => compressImage(f))).then(results => { setAttachments(prev => [...prev, ...results].slice(0, 9)); }); };
             const extractUrls = (text) => { const urlRegex = /(https?:\/\/[^\s\u4e00-\u9fa5,，.。;；]+)/g; const matches = text.match(urlRegex); if (!matches) return []; return matches.map(url => { return url.replace(/[.,;?!]$/, ""); }); };
 
             const switchVariant = (msgIndex, direction) => {
@@ -1712,7 +1712,7 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
             };
 
             const handleSend = async () => {
-                if (!input.trim() && !attachment) return;
+                if (!input.trim() && attachments.length === 0) return;
                 if (!config.apiKey) { setSettingsOpen(true); setActiveTab('general'); setError('请先配置 API Key'); return; }
                 const activeSessionId = currentSessionId || (() => { const newId = Date.now().toString(); setCurrentSessionId(newId); return newId; })();
                 const now = new Date(); const nowTimestampStr = getTimestamp();
@@ -1735,11 +1735,11 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                 }
 
                 let finalContent = textToSend;
-                if (attachment) finalContent += `\n\n![Image](${attachment.base64})`;
+                if (attachments.length > 0) attachments.forEach(att => { finalContent += `\n\n![Image](${att.base64})`; });
                 if (hiddenContext) finalContent += `\n\n<details class="normal-details"><summary>引用网页内容</summary>\n\n${hiddenContext}\n\n</details>\n\n(系统提示: 上方是自动抓取的网页内容，请基于此回复我)`;
 
                 const newHistory = [...messages, { role: 'user', content: finalContent, timestamp: nowTimestampStr, timestampRaw: now.getTime() }];
-                setMessages(newHistory); setInput(''); setAttachment(null);
+                setMessages(newHistory); setInput(''); setAttachments([]);
 
                 try {
                     const { url, headers, payload } = generatePayload(newHistory, false);
@@ -1815,7 +1815,8 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                 }
             };
 
-            const handleKeyDown = (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } };
+            const isMobile = /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent);
+            const handleKeyDown = (e) => { if (e.key === 'Enter' && !isMobile && !e.shiftKey) { e.preventDefault(); handleSend(); } };
 
             return (
                 <div className="flex h-screen bg-white text-gray-900 font-sans overflow-hidden">
@@ -1836,8 +1837,8 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                                     <div className="space-y-2">
                                         <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>🎙️ <b>语音输入</b>：麦克风按钮正式上线！点击开始说话，识别结果填入输入框，可修改后再发送。</li>
-                                            <li>🔊 <b>语音朗读上限提升</b>：从240字提升至1000字，长回复也能完整听完啦～</li>
+                                            <li>🎙️ <b>图片输入</b>：多张图片可以发送啦。</li>
+                                            <li>🔊 <b>手机回车只会换行</b>：不会再误触发啦～</li>
                                             <li>🧹 <b>LaTeX 乱码修复</b>：模型回复中意外出现的 LaTeX 排版代码会被自动清理为正常文字，再也不怕满屏 \textcolor 了。</li>
                                         </ul>
                                     </div>
@@ -2071,10 +2072,14 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                                         {(error.includes("429") || error.includes("Code 8")) && <span className="text-[10px] text-red-400">提示: 触发免费版频率限制，请稍等几秒再点击“重新生成”</span>}
                                     </div>
                                 )}
-                                {attachment && (
-                                    <div className="absolute -top-20 left-4 w-16 h-16 rounded-lg overflow-hidden border border-gray-200 shadow-md group">
-                                        <img src={attachment.base64} className="w-full h-full object-cover" />
-                                        <button onClick={() => setAttachment(null)} className="absolute top-0 right-0 bg-black/50 text-white p-0.5 rounded-bl hover:bg-red-500"><Icon name="X" size={12} /></button>
+                                {attachments.length > 0 && (
+                                    <div className="absolute -top-20 left-4 flex gap-2">
+                                        {attachments.map((att, idx) => (
+                                            <div key={idx} className="w-16 h-16 rounded-lg overflow-hidden border border-gray-200 shadow-md group relative flex-shrink-0">
+                                                <img src={att.base64} className="w-full h-full object-cover" />
+                                                <button onClick={() => setAttachments(prev => prev.filter((_, i) => i !== idx))} className="absolute top-0 right-0 bg-black/50 text-white p-0.5 rounded-bl hover:bg-red-500"><Icon name="X" size={12} /></button>
+                                            </div>
+                                        ))}
                                     </div>
                                 )}
 
@@ -2084,11 +2089,11 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                                         <Icon name="Image" size={24} />
                                     </button>
                                     
-                                    <input type="file" ref={chatImageInputRef} style={{display: 'none'}} accept="image/*" onChange={handleChatImageSelect}/>
+                                    <input type="file" ref={chatImageInputRef} style={{display: 'none'}} accept="image/*" multiple onChange={handleChatImageSelect}/>
                                     <textarea value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} placeholder="星月交辉✨......" className="bg-transparent border-0 focus:ring-0 text-gray-800 flex-1 resize-none py-3 max-h-32 min-h-[44px] outline-none placeholder:text-gray-400 text-base" rows={1}></textarea>
                                     {isListening ? (
                                         <button onClick={toggleSpeechRecognition} className="mb-1 p-2 bg-red-500 text-white rounded-full animate-pulse transition-colors" title="停止录音"><Icon name="StopCircle" size={20} /></button>
-                                    ) : (input.trim() || attachment) ? (
+                                    ) : (input.trim() || attachments.length > 0) ? (
                                         <button onClick={handleSend} disabled={isLoading} className="mb-1 p-2 bg-blue-600 text-white rounded-full hover:bg-blue-700 transition-colors shadow-sm"><Icon name="Send" size={18} /></button>
                                     ) : (
                                         <button onClick={toggleSpeechRecognition} className="mb-1 p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-full transition-colors" title="语音输入"><Icon name="Mic" size={20} /></button>
