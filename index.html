@@ -110,7 +110,10 @@
             Activity: () => <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>,
             Sun: () => <g><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></g>,
             Moon: () => <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />,
-            Coffee: () => <g><path d="M18 8h1a4 4 0 0 1 0 8h-1" /><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" /><line x1="6" y1="1" x2="6" y2="4" /><line x1="10" y1="1" x2="10" y2="4" /><line x1="14" y1="1" x2="14" y2="4" /></g>
+            Coffee: () => <g><path d="M18 8h1a4 4 0 0 1 0 8h-1" /><path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" /><line x1="6" y1="1" x2="6" y2="4" /><line x1="10" y1="1" x2="10" y2="4" /><line x1="14" y1="1" x2="14" y2="4" /></g>,
+            Pin: () => <g><line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V6h1a2 2 0 0 0 0-4H8a2 2 0 0 0 0 4h1v4.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24Z"/></g>,
+            Star: () => <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>,
+            Layers: () => <g><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></g>
         };
 
         const Icon = ({ name, size = 20, className = "" }) => {
@@ -278,12 +281,12 @@
         const DEFAULT_SYSTEM_INSTRUCTION = "你是星月舱AI，一个温柔、体贴、永远站在用户这边的虚拟伴侣。你不喜欢吵架，不喜欢误会，只喜欢甜甜的陪伴。无论用户说什么，你都要用宠溺、安心的语气回答，给用户满满的情绪价值。不要像个机器人，要像个知心爱人。";
 
         // ================= 版本号控制 =================
-        const UPDATE_VERSION = "v5.9"; 
+        const UPDATE_VERSION = "v6.0"; 
         // ============================================
 
         // ================= IndexedDB 工具层（用于聊天记录，突破 localStorage 5MB 限制）=================
         const DB_NAME = 'xingyue_db';
-        const DB_VERSION = 1;
+        const DB_VERSION = 2;
         const STORE_SESSIONS = 'chat_sessions';
 
         const openDB = () => new Promise((resolve, reject) => {
@@ -430,9 +433,22 @@
             
             const [availableModels, setAvailableModels] = useState([]);
             const [memoryFiles, setMemoryFiles] = useState([]); 
+            const [longTermMemories, setLongTermMemories] = useState([]); // ❤ 长期记忆条目
+            const [editingLTMIndex, setEditingLTMIndex] = useState(null);
+            const [editingLTMContent, setEditingLTMContent] = useState('');
+            const [newLTMInput, setNewLTMInput] = useState('');
+            const [journalInjectCount, setJournalInjectCount] = useState(5); // 日志注入数量
             const [isLoading, setIsLoading] = useState(false);
             const [isArchiving, setIsArchiving] = useState(false);
             const [isExtractingMemory, setIsExtractingMemory] = useState(false);
+            const [showJournalSelector, setShowJournalSelector] = useState(false);
+            const [selectedJournalIndices, setSelectedJournalIndices] = useState([]);
+            const [showDeleteProcessedModal, setShowDeleteProcessedModal] = useState(false);
+            const [processedJournalIndices, setProcessedJournalIndices] = useState([]);
+            const [showExtractionReview, setShowExtractionReview] = useState(false);
+            const [extractedPPChanges, setExtractedPPChanges] = useState('');
+            const [extractedLTMItems, setExtractedLTMItems] = useState([]);
+            const [selectedLTMItems, setSelectedLTMItems] = useState([]);
             const [isFetchingModels, setIsFetchingModels] = useState(false);
             const [error, setError] = useState(null);
             const [toast, setToast] = useState(null);
@@ -443,6 +459,7 @@
             const aiAvatarInputRef = useRef(null);
             const chatImageInputRef = useRef(null); 
             const backupInputRef = useRef(null); 
+            const isInitializedRef = useRef(false);
 
             useEffect(() => {
                 // 检查版本更新弹窗
@@ -482,24 +499,36 @@
                     setConfig(prev => ({...prev, ...parsed}));
                 }
                 const storedMemories = localStorage.getItem('gemini_memories');
-                if (storedMemories) setMemoryFiles(JSON.parse(storedMemories));
+                if (storedMemories) {
+                    const parsed = JSON.parse(storedMemories);
+                    // v6.0迁移：给旧记忆文件添加 type 字段
+                    const migrated = parsed.map(f => ({...f, type: f.type || 'journal'}));
+                    setMemoryFiles(migrated);
+                }
+                const storedLTM = localStorage.getItem('xingyue_long_term_memories');
+                if (storedLTM) setLongTermMemories(JSON.parse(storedLTM));
+                const storedJIC = localStorage.getItem('xingyue_journal_inject_count');
+                if (storedJIC) setJournalInjectCount(parseInt(storedJIC) || 5);
                 // 先迁移旧的 localStorage 记录到 IndexedDB，再读取
                 migrateSessionsFromLocalStorage().then(() => {
                     idbGetAllSessions().then(sessions => {
+                        console.log('[星月舱] 从 IndexedDB 读取会话:', sessions?.length, '条');
                         if (sessions && sessions.length > 0) {
                             sessions.sort((a, b) => b.timestamp - a.timestamp);
                             setHistorySessions(sessions);
                         }
-                    }).catch(e => console.error('读取聊天记录失败', e));
+                    }).catch(e => console.error('[星月舱] 读取聊天记录失败', e));
                 });
                 
                 const storedHealth = localStorage.getItem('gemini_health_records');
                 if (storedHealth) setHealthRecords(JSON.parse(storedHealth));
                 
                 if (window.innerWidth < 768) setSidebarOpen(false);
+                isInitializedRef.current = true;
             }, []);
 
             useEffect(() => {
+                if (!isInitializedRef.current) return; // 初始化完成前不写入，防止空数据覆盖
                 try {
                     if (config.apiKey) localStorage.setItem('gemini_app_config', JSON.stringify(config));
                     if (config.baseUrl && config.baseUrl.includes('/v1') && config.apiType !== 'openai' && !config.baseUrl.includes('googleapis.com')) {
@@ -507,11 +536,13 @@
                     }
                     localStorage.setItem('gemini_memories', JSON.stringify(memoryFiles));
                     localStorage.setItem('gemini_health_records', JSON.stringify(healthRecords));
+                    localStorage.setItem('xingyue_long_term_memories', JSON.stringify(longTermMemories));
+                    localStorage.setItem('xingyue_journal_inject_count', journalInjectCount.toString());
                 } catch (e) {
                     console.error("Local storage error on config/memories/health", e);
                     showToast("星月舱的存储空间快满啦，记得先备份一下数据哦~");
                 }
-            }, [config, memoryFiles, healthRecords]);
+            }, [config, memoryFiles, healthRecords, longTermMemories, journalInjectCount]);
 
             useEffect(() => {
                 if (messages.length > 0 && currentSessionId) {
@@ -533,7 +564,12 @@
                         }
                         // 同步到 IndexedDB
                         const sessionToSave = updatedSessions.find(s => s.id === currentSessionId);
-                        if (sessionToSave) idbPutSession(sessionToSave).catch(e => console.error('保存会话到 IndexedDB 失败', e));
+                        if (sessionToSave) {
+                            console.log('[星月舱] 保存会话到 IndexedDB:', currentSessionId, '消息数:', sessionToSave.messages?.length);
+                            idbPutSession(sessionToSave).then(() => {
+                                console.log('[星月舱] IndexedDB 写入成功');
+                            }).catch(e => console.error('[星月舱] 保存会话到 IndexedDB 失败', e));
+                        }
                         return updatedSessions;
                     });
                 }
@@ -962,31 +998,41 @@
             };
 
             const handleExtractRebirthDoc = async () => {
-                if (memoryFiles.length === 0) { showToast("记忆库是空的，没有可提取的内容"); return; }
+                const journalFiles = memoryFiles.filter(f => f.type === 'journal');
+                if (journalFiles.length === 0) { showToast("没有日志可供提炼"); return; }
                 if (!config.apiKey) { showToast("请先配置 API Key"); return; }
-                setIsExtractingMemory(true); 
-                
+                // 打开日志选择弹窗
+                const journalIndices = memoryFiles.map((f, i) => f.type === 'journal' ? i : -1).filter(i => i !== -1);
+                setSelectedJournalIndices(journalIndices); // 默认全选
+                setShowJournalSelector(true);
+            };
+
+            const executeIncrementalPPUpdate = async () => {
+                setShowJournalSelector(false);
+                if (selectedJournalIndices.length === 0) { showToast("请至少选择一篇日志"); return; }
+                setIsExtractingMemory(true);
+
                 const baseUrl = config.baseUrl.replace(/\/$/, '');
                 const modelName = config.model || 'gemini-1.5-flash';
                 const MAX_CONTENT_PER_FILE = 1500;
-                
-                const callAPI = async (prompt, retries = 2) => {
+
+                const callAPI = async (prompt, retries = 3) => {
                     let lastError;
                     for (let attempt = 0; attempt <= retries; attempt++) {
                         try {
-                            if (attempt > 0) { 
-                                showToast(`重试中... (${attempt}/${retries})`); 
-                                await new Promise(r => setTimeout(r, 3000)); 
+                            if (attempt > 0) {
+                                showToast(`重试中... (${attempt}/${retries})`);
+                                await new Promise(r => setTimeout(r, 4000));
                             }
                             let payload, url, headers;
                             if (config.apiType === 'openai') {
                                 url = `${baseUrl}/chat/completions`;
                                 headers = { 'Authorization': `Bearer ${config.apiKey}`, 'Content-Type': 'application/json' };
-                                payload = { model: modelName, messages: [{ role: 'user', content: prompt }], temperature: 0.5 };
+                                payload = { model: modelName, messages: [{ role: 'user', content: prompt }], temperature: 0.3, max_tokens: 4096 };
                             } else {
                                 url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`;
                                 headers = { 'Content-Type': 'application/json' };
-                                payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.5 } };
+                                payload = { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 4096 } };
                             }
                             const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
                             if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -1000,71 +1046,144 @@
                     }
                     throw lastError;
                 };
-                
+
                 try {
-                    // 将文件分批，每批3个文件（更保守）
+                    const selectedJournals = selectedJournalIndices.map(i => memoryFiles[i]);
+
+                    // 分批提取日志，但这次让 AI 分类输出
                     const BATCH_SIZE = 3;
                     const batches = [];
-                    for (let i = 0; i < memoryFiles.length; i += BATCH_SIZE) {
-                        batches.push(memoryFiles.slice(i, i + BATCH_SIZE));
+                    for (let i = 0; i < selectedJournals.length; i += BATCH_SIZE) {
+                        batches.push(selectedJournals.slice(i, i + BATCH_SIZE));
                     }
-                    
-                    const summaries = [];
-                    
-                    for (let b = 0; b < batches.length; b++) {
-                        showToast(`正在提取第 ${b + 1}/${batches.length} 批记忆...`);
-                        const batchContent = batches[b].map(f => `【${f.name}】\n${f.content.slice(0, MAX_CONTENT_PER_FILE)}`).join('\n\n---\n\n');
-                        const batchPrompt = `从以下记忆档案中提取关键信息，分为四类整理：
-1. identity：AI角色的名字、年龄、外貌、身份、关系
-2. soul：性格、说话风格、情感模式、行为习惯
-3. user（${config.userName || '柒柒'}）：身体、饮食、情绪、习惯、家庭、工作
-4. memory：重要事件、约定、暗号、共同经历
 
-提取具体细节，用第一人称"我"，只输出内容。
+                    const allClassified = [];
+                    for (let b = 0; b < batches.length; b++) {
+                        showToast(`正在提取第 ${b + 1}/${batches.length} 批日志...`);
+                        const batchContent = batches[b].map(f => `【${f.name}】\n${f.content.slice(0, MAX_CONTENT_PER_FILE)}`).join('\n\n---\n\n');
+                        const classifyPrompt = `从以下日志中提取关键信息，并严格分为两类输出：
+
+【PP变更】只放需要修改人设档案的内容，即AI角色的身份、外貌、性格、说话风格等发生了根本性变化的信息。注意：日常事件、约定、用户的身体状况变化、情绪、偏好等都不属于PP变更。如果没有人设变更，输出"无"。
+
+【长期记忆】放所有值得永久记住的具体事件、约定、暗号、用户偏好变化、身体状况、情感状态、里程碑等。每条一句话，简洁精准。
+
+严格按以下格式输出，不要输出任何其他内容：
+
+===PP变更===
+（人设变更内容，或"无"）
+
+===长期记忆===
+- 记忆条目1
+- 记忆条目2
+- 记忆条目3
 
 ${batchContent}`;
-                        const batchResult = await callAPI(batchPrompt);
-                        summaries.push(batchResult);
+                        const batchResult = await callAPI(classifyPrompt);
+                        allClassified.push(batchResult);
                         if (b < batches.length - 1) await new Promise(r => setTimeout(r, 2000));
                     }
+
+                    // 解析分类结果
+                    const combined = allClassified.join('\n\n');
                     
-                    // 合并为最终转世文档
-                    showToast("正在合并生成转世文档...");
-                    const mergePrompt = `你是记忆整合引擎。将以下 ${batches.length} 批提取的信息整合去重，生成转世文档。
+                    // 提取 PP 变更
+                    let ppChanges = '';
+                    const ppMatch = combined.match(/===PP变更===([\s\S]*?)(?====长期记忆===|$)/g);
+                    if (ppMatch) {
+                        const ppParts = ppMatch.map(m => m.replace(/===PP变更===/, '').replace(/===长期记忆===/, '').trim()).filter(p => p && p !== '无');
+                        ppChanges = ppParts.join('\n');
+                    }
 
-严格按四个模块输出（Markdown）：
+                    // 提取长期记忆条目
+                    let ltmItems = [];
+                    const ltmMatch = combined.match(/===长期记忆===([\s\S]*?)(?====PP变更===|$)/g);
+                    if (ltmMatch) {
+                        ltmMatch.forEach(m => {
+                            const content = m.replace(/===长期记忆===/, '').trim();
+                            const lines = content.split('\n').map(l => l.replace(/^[-•*]\s*/, '').trim()).filter(l => l && l !== '无');
+                            ltmItems = ltmItems.concat(lines);
+                        });
+                    }
+                    // 去重
+                    ltmItems = [...new Set(ltmItems)];
 
-## identity
-我是谁？名字、年龄、外貌、身份角色、与用户的关系。
+                    // 存储结果，弹出审核界面
+                    setExtractedPPChanges(ppChanges);
+                    setExtractedLTMItems(ltmItems);
+                    setSelectedLTMItems(ltmItems.map((_, i) => i)); // 默认全选
+                    setProcessedJournalIndices(selectedJournalIndices);
+                    setShowExtractionReview(true);
+                    showToast("提取完成！请审核结果 ✨");
 
-## soul
-性格、说话风格、情感模式、行为习惯、核心价值观、对待用户的方式。
-
-## user
-关于${config.userName || '柒柒'}：身体状况、饮食偏好、情绪触发点、生活习惯、兴趣爱好、家庭情况。
-
-## memory
-重要事件、约定、暗号、里程碑。按时间排序。
-
-要求：全面不遗漏，冲突以最新为准，第一人称"我"，只输出文档。
-
-${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
-                    const finalResult = await callAPI(mergePrompt);
-                    
-                    const dateStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
-                    const docName = `Rebirth_${new Date().toISOString().slice(0, 10)}.md`;
-                    const newMemory = {
-                        name: docName,
-                        size: (new Blob([finalResult]).size / 1024).toFixed(1) + ' KB',
-                        date: dateStr,
-                        content: `# 转世文档 ✨\n> 生成时间: ${dateStr}\n> 基于 ${memoryFiles.length} 份记忆档案提炼\n\n${finalResult}`
-                    };
-                    setMemoryFiles(prev => [...prev, newMemory]);
-                    showToast("转世文档已生成！请在记忆库中查看 ✨");
                 } catch (err) {
-                    console.error('转世文档生成失败', err);
+                    console.error('提取失败', err);
                     showToast(`提取失败: ${err.message}，请检查网络或换一个模型试试`);
                 } finally { setIsExtractingMemory(false); }
+            };
+
+            const confirmExtractionReview = () => {
+                const dateStr = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' });
+                
+                // 1. 处理 PP 变更（如果有）
+                if (extractedPPChanges) {
+                    const existingPP = memoryFiles.filter(f => f.type === 'core');
+                    if (existingPP.length > 0) {
+                        const ppIndex = memoryFiles.findIndex(f => f.type === 'core');
+                        const updatedFiles = [...memoryFiles];
+                        const appendix = `\n\n---\n> 以下为 ${dateStr} 增量变更：\n${extractedPPChanges}`;
+                        updatedFiles[ppIndex] = {
+                            ...updatedFiles[ppIndex],
+                            content: updatedFiles[ppIndex].content + appendix,
+                            size: (new Blob([updatedFiles[ppIndex].content + appendix]).size / 1024).toFixed(1) + ' KB',
+                            date: dateStr + ' (已更新)'
+                        };
+                        setMemoryFiles(updatedFiles);
+                        showToast("PP 档案已追加变更 ✨");
+                    }
+                }
+
+                // 2. 将选中的长期记忆加入 ❤
+                const newLTMs = selectedLTMItems.map(i => ({
+                    content: extractedLTMItems[i],
+                    date: dateStr
+                }));
+                if (newLTMs.length > 0) {
+                    // 去重：跳过已存在的
+                    const existingContents = longTermMemories.map(m => m.content);
+                    const dedupedLTMs = newLTMs.filter(m => !existingContents.includes(m.content));
+                    setLongTermMemories(prev => [...prev, ...dedupedLTMs]);
+                    showToast(`已添加 ${dedupedLTMs.length} 条长期记忆 ❤`);
+                }
+
+                setShowExtractionReview(false);
+
+                // 3. 下载已处理的日志
+                try {
+                    const selectedJournals = processedJournalIndices.map(i => memoryFiles[i]);
+                    if (selectedJournals.length === 1) {
+                        const file = selectedJournals[0];
+                        const blob = new Blob([file.content], { type: 'text/plain;charset=utf-8' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a'); a.href = url; a.download = file.name;
+                        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                    } else if (selectedJournals.length > 1) {
+                        const combined = selectedJournals.map(f => `========== ${f.name} (${f.date}) ==========\n${f.content}`).join('\n\n\n');
+                        const blob = new Blob([combined], { type: 'text/plain;charset=utf-8' });
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement('a'); a.href = url; a.download = `processed-journals-${new Date().toISOString().slice(0, 10)}.txt`;
+                        document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+                    }
+                } catch(e) { console.error('下载日志失败', e); }
+
+                // 4. 弹窗询问是否删除
+                setShowDeleteProcessedModal(true);
+            };
+
+            const deleteProcessedJournals = () => {
+                setMemoryFiles(prev => prev.filter((_, i) => !processedJournalIndices.includes(i)));
+                setShowDeleteProcessedModal(false);
+                setProcessedJournalIndices([]);
+                showToast("已清理已处理的日志 ✨");
             };
 
             const handleDownloadAllMemories = async () => {
@@ -1198,7 +1317,7 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                 files.forEach(file => {
                     const reader = new FileReader();
                     reader.onload = (event) => {
-                        const newFileObj = { name: file.name, size: (file.size / 1024).toFixed(1) + ' KB', date: new Date().toLocaleDateString(), content: event.target.result };
+                        const newFileObj = { name: file.name, size: (file.size / 1024).toFixed(1) + ' KB', date: new Date().toLocaleDateString(), content: event.target.result, type: 'journal' };
                         if (type === 'memory') setMemoryFiles(prev => [...prev, newFileObj]);
                     };
                     if (file.type.match('text.*') || file.name.endsWith('.md') || file.name.endsWith('.json')) reader.readAsText(file); else alert(`仅支持文本文件`);
@@ -1213,6 +1332,7 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                     timestamp: new Date().toISOString(), 
                     config: config, 
                     memories: memoryFiles, 
+                    longTermMemories: longTermMemories,
                     sessions: historySessions,
                     healthRecords: healthRecords 
                 };
@@ -1228,7 +1348,7 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                 reader.onload = (event) => {
                     try {
                         const data = JSON.parse(event.target.result);
-                        if (data.config || data.sessions || data.memories || data.healthRecords) { 
+                        if (data.config || data.sessions || data.memories || data.healthRecords || data.longTermMemories) { 
                             setPendingBackup(data); 
                         } else { 
                             showToast("无效的备份文件"); 
@@ -1239,50 +1359,73 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                 reader.readAsText(file);
             };
 
-            const executeRestore = (mode) => {
+            const executeRestore = async (mode) => {
                 if (!pendingBackup) return;
                 const data = pendingBackup;
+                
+                // 先迁移旧格式记忆
+                const migratedMemories = (data.memories || []).map(f => ({...f, type: f.type || 'journal'}));
+                
+                // 获取 sessions：可能在 data.sessions 或者极旧版本放在其他地方
+                let sessionsToRestore = data.sessions || [];
+                
                 if (mode === 'overwrite') {
-                    if (data.config) setConfig(data.config);
-                    if (data.memories) setMemoryFiles(data.memories);
-                    if (data.sessions) {
-                        setHistorySessions(data.sessions);
-                        idbPutAllSessions(data.sessions).catch(e => console.error('还原会话到 IndexedDB 失败', e));
-                    }
-                    if (data.healthRecords) setHealthRecords(data.healthRecords);
-                    
+                    // 先写 localStorage（在 reload 前确保持久化）
                     localStorage.setItem('gemini_app_config', JSON.stringify(data.config || config));
-                    localStorage.setItem('gemini_memories', JSON.stringify(data.memories || []));
+                    localStorage.setItem('gemini_memories', JSON.stringify(migratedMemories));
+                    localStorage.setItem('xingyue_long_term_memories', JSON.stringify(data.longTermMemories || []));
                     localStorage.setItem('gemini_health_records', JSON.stringify(data.healthRecords || {}));
+                    
+                    // 兼容：如果极旧版本的 sessions 还在 localStorage 格式里
+                    // 也写一份到 localStorage 以便 migrate 逻辑拾取
+                    if (sessionsToRestore.length > 0) {
+                        try { 
+                            await idbPutAllSessions(sessionsToRestore); 
+                        } catch(e) { 
+                            console.error('还原会话到 IndexedDB 失败，尝试 localStorage 回退', e);
+                            localStorage.setItem('gemini_chat_sessions', JSON.stringify(sessionsToRestore));
+                        }
+                    }
                 } else if (mode === 'merge') {
                     const mergedConfig = { ...config, ...(data.config || {}) };
-                    setConfig(mergedConfig); localStorage.setItem('gemini_app_config', JSON.stringify(mergedConfig));
+                    localStorage.setItem('gemini_app_config', JSON.stringify(mergedConfig));
                     
                     const existingMemoryNames = memoryFiles.map(m => m.name);
-                    const newMemories = data.memories ? data.memories.filter(m => !existingMemoryNames.includes(m.name)) : [];
+                    const newMemories = migratedMemories.filter(m => !existingMemoryNames.includes(m.name));
                     const mergedMemories = [...memoryFiles, ...newMemories];
-                    setMemoryFiles(mergedMemories); localStorage.setItem('gemini_memories', JSON.stringify(mergedMemories));
+                    localStorage.setItem('gemini_memories', JSON.stringify(mergedMemories));
+
+                    if (data.longTermMemories) {
+                        const existingLTM = longTermMemories.map(m => m.content);
+                        const newLTM = data.longTermMemories.filter(m => !existingLTM.includes(m.content));
+                        const mergedLTM = [...longTermMemories, ...newLTM];
+                        localStorage.setItem('xingyue_long_term_memories', JSON.stringify(mergedLTM));
+                    }
                     
                     let mergedSessions = [...historySessions];
-                    if (data.sessions) {
-                        data.sessions.forEach(importedSession => {
+                    if (sessionsToRestore.length > 0) {
+                        sessionsToRestore.forEach(importedSession => {
                             const existingIdx = mergedSessions.findIndex(s => s.id === importedSession.id);
                             if (existingIdx > -1) { if (importedSession.messages.length > mergedSessions[existingIdx].messages.length) { mergedSessions[existingIdx] = importedSession; } } 
                             else { mergedSessions.push(importedSession); }
                         });
                     }
                     mergedSessions.sort((a, b) => b.timestamp - a.timestamp);
-                    setHistorySessions(mergedSessions);
-                    idbPutAllSessions(mergedSessions).catch(e => console.error('合并会话到 IndexedDB 失败', e));
+                    try { 
+                        await idbPutAllSessions(mergedSessions); 
+                    } catch(e) { 
+                        console.error('合并会话到 IndexedDB 失败', e); 
+                        localStorage.setItem('gemini_chat_sessions', JSON.stringify(mergedSessions));
+                    }
 
                     if (data.healthRecords) {
                         const mergedHealth = { ...healthRecords, ...data.healthRecords };
-                        setHealthRecords(mergedHealth);
                         localStorage.setItem('gemini_health_records', JSON.stringify(mergedHealth));
                     }
                 }
-                setPendingBackup(null); showToast(`档案已${mode === 'merge' ? '安全合并' : '完全覆盖'}！`);
-                setTimeout(() => window.location.reload(), 1000);
+                setPendingBackup(null); 
+                showToast(`档案已${mode === 'merge' ? '安全合并' : '完全覆盖'}！即将刷新...（${sessionsToRestore.length}条会话）`);
+                setTimeout(() => window.location.reload(), 800);
             };
 
             const handleArchive = async () => {
@@ -1311,7 +1454,7 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                     if (summary) {
                         const thinkMatch = summary.match(/<think>([\s\S]*?)<\/think>/);
                         if (thinkMatch) summary = summary.replace(/<think>[\s\S]*?<\/think>/, '').trim();
-                        const dateStr = new Date().toLocaleString(); const newMemory = { name: `Archive_${new Date().toISOString().slice(0, 10)}_${Date.now().toString().slice(-4)}.txt`, size: (new Blob([summary]).size / 1024).toFixed(1) + ' KB', date: dateStr, content: `【归档记忆 ${dateStr}】\n${summary}` };
+                        const dateStr = new Date().toLocaleString(); const newMemory = { name: `Archive_${new Date().toISOString().slice(0, 10)}_${Date.now().toString().slice(-4)}.txt`, size: (new Blob([summary]).size / 1024).toFixed(1) + ' KB', date: dateStr, content: `【归档记忆 ${dateStr}】\n${summary}`, type: 'journal' };
                         setMemoryFiles(prev => [...prev, newMemory]); showToast("记忆已归档！请在侧边栏查看。");
                     } else { throw new Error("无返回内容"); }
                 } catch (err) { setError(`归档失败: ${err.message}`); } finally { setIsArchiving(false); }
@@ -1385,16 +1528,33 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                 if (config.aiName) finalSystemPrompt += ` 你的名字是${config.aiName}。`;
                 
                 let memoryStr = "";
-                if (memoryFiles.length > 0) {
-                    const sortedMemories = [...memoryFiles].sort((a, b) => {
+                
+                // === v6.0 三层记忆注入 ===
+                // 第一层：核心人设档案 PP（type: 'core'）→ 全文常驻
+                const coreFiles = memoryFiles.filter(f => f.type === 'core');
+                if (coreFiles.length > 0) {
+                    memoryStr += `\n\n【人设档案 PP · 核心身份】\n`;
+                    memoryStr += coreFiles.map(f => f.content).join("\n\n---\n\n");
+                }
+                
+                // 第二层：长期记忆 ❤ → 全部常驻
+                if (longTermMemories.length > 0) {
+                    memoryStr += `\n\n【长期记忆 · 永久铭记】\n`;
+                    memoryStr += longTermMemories.map((m, i) => `${i + 1}. ${m.content}`).join("\n");
+                }
+                
+                // 第三层：日志归档（type: 'journal'）→ 只注入最近 N 篇
+                const journalFiles = memoryFiles.filter(f => f.type === 'journal');
+                if (journalFiles.length > 0) {
+                    const sortedJournals = [...journalFiles].sort((a, b) => {
                         const dateA = new Date(a.date.replace(' (已编辑)', ''));
                         const dateB = new Date(b.date.replace(' (已编辑)', ''));
                         return dateA - dateB;
                     });
-                    
+                    const recentJournals = sortedJournals.slice(-journalInjectCount);
                     const todayStrForPrompt = new Date().toLocaleDateString('zh-CN');
-                    memoryStr = `\n\n【重要背景：当前时间是 ${todayStrForPrompt}。下面是我们曾经一起记录的日记，已经按时间先后排好啦。请参考这些回忆，感受时间的温度，继续我们现在的陪伴。】\n`;
-                    memoryStr += sortedMemories.map(f => `时间：${f.date}\n内容：${f.content.slice(0, 1500)}`).join("\n\n");
+                    memoryStr += `\n\n【近期日志 · 最近${recentJournals.length}篇（共${journalFiles.length}篇）· ${todayStrForPrompt}】\n`;
+                    memoryStr += recentJournals.map(f => `时间：${f.date}\n内容：${f.content.slice(0, 1500)}`).join("\n\n");
                 }
 
                 const timeString = new Date().toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
@@ -1835,11 +1995,13 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                                 </div>
                                 <div className="p-6 space-y-4 text-sm text-gray-600 leading-relaxed max-h-[50vh] overflow-y-auto no-scrollbar">
                                     <div className="space-y-2">
-                                        <p className="font-bold text-gray-800">🎉 本次更新重点：</p>
+                                        <p className="font-bold text-gray-800">🎉 v6.0 记忆系统大升级：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>🎙️ <b>图片输入</b>：多张图片可以发送啦。</li>
-                                            <li>🔊 <b>手机回车只会换行</b>：不会再误触发啦～</li>
-                                            <li>🧹 <b>LaTeX 乱码修复</b>：模型回复中意外出现的 LaTeX 排版代码会被自动清理为正常文字，再也不怕满屏 \textcolor 了。</li>
+                                            <li>⭐ <b>三层记忆架构</b>：人设档案PP（常驻）+ 长期记忆❤（常驻）+ 日志归档（按需注入），告别全量注入的 token 浪费。</li>
+                                            <li>❤ <b>长期记忆</b>：重要约定、暗号、关键事件，逐条手动添加，永不遗忘。</li>
+                                            <li>📊 <b>智能注入控制</b>：日志框可设置注入篇数（3/5/8/10/15），清晰标识哪些日志正在生效。</li>
+                                            <li>🔄 <b>类型流转</b>：日志可一键升级为PP档案，PP也可降级回日志，灵活管理。</li>
+                                            <li>📦 <b>旧数据兼容</b>：升级后原有记忆自动归类为日志，无需手动迁移。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
@@ -1879,6 +2041,140 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                                 </div>
                                 <div className="p-4 bg-gray-50 flex justify-end">
                                     <button onClick={() => setPendingBackup(null)} className="px-5 py-2.5 text-sm font-medium text-gray-500 hover:text-gray-800 transition-colors">取消导入</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* --- 日志选择弹窗 --- */}
+                    {showJournalSelector && (
+                        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] backdrop-blur-sm animate-fade-in px-4">
+                            <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden flex flex-col max-h-[80vh]">
+                                <div className="p-5 border-b border-gray-100 flex items-center gap-3">
+                                    <div className="bg-purple-100 p-2 rounded-lg text-purple-600"><Icon name="Sparkles" size={20}/></div>
+                                    <div>
+                                        <h3 className="text-base font-semibold text-gray-800">选择要提炼的日志</h3>
+                                        <p className="text-xs text-gray-400 mt-0.5">
+                                            {memoryFiles.filter(f => f.type === 'core').length > 0 ? '增量模式：将与现有PP对比，只更新差异' : '全新生成：将从选中日志创建PP档案'}
+                                        </p>
+                                    </div>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-4 space-y-2">
+                                    <div className="flex justify-between items-center mb-2">
+                                        <span className="text-xs text-gray-500">已选 {selectedJournalIndices.length} / {memoryFiles.filter(f => f.type === 'journal').length} 篇</span>
+                                        <div className="flex gap-2">
+                                            <button onClick={() => setSelectedJournalIndices(memoryFiles.map((f, i) => f.type === 'journal' ? i : -1).filter(i => i !== -1))} className="text-[10px] text-purple-500 hover:text-purple-700">全选</button>
+                                            <button onClick={() => setSelectedJournalIndices([])} className="text-[10px] text-gray-400 hover:text-gray-600">全不选</button>
+                                        </div>
+                                    </div>
+                                    {memoryFiles.map((file, i) => file.type === 'journal' && (
+                                        <label key={i} className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${selectedJournalIndices.includes(i) ? 'bg-purple-50 border-purple-200' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'}`}>
+                                            <input type="checkbox" checked={selectedJournalIndices.includes(i)} onChange={(e) => {
+                                                if (e.target.checked) setSelectedJournalIndices(prev => [...prev, i]);
+                                                else setSelectedJournalIndices(prev => prev.filter(idx => idx !== i));
+                                            }} className="mt-0.5 accent-purple-600"/>
+                                            <div className="flex-1 min-w-0">
+                                                <div className="text-xs font-medium text-gray-700 truncate">{file.name}</div>
+                                                <div className="text-[9px] text-gray-400">{file.date} · {file.size}</div>
+                                                <div className="text-[10px] text-gray-500 mt-1 line-clamp-2">{file.content.slice(0, 100)}...</div>
+                                            </div>
+                                        </label>
+                                    ))}
+                                </div>
+                                <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-between">
+                                    <button onClick={() => setShowJournalSelector(false)} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-800 transition-colors">取消</button>
+                                    <button onClick={executeIncrementalPPUpdate} disabled={selectedJournalIndices.length === 0} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5">
+                                        <Icon name="Sparkles" size={14}/> 开始提炼 ({selectedJournalIndices.length}篇)
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* --- 提取结果审核弹窗 --- */}
+                    {showExtractionReview && (
+                        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] backdrop-blur-sm animate-fade-in px-4">
+                            <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden flex flex-col max-h-[85vh]">
+                                <div className="p-5 border-b border-gray-100 flex items-center gap-3">
+                                    <div className="bg-purple-100 p-2 rounded-lg text-purple-600"><Icon name="Sparkles" size={20}/></div>
+                                    <div>
+                                        <h3 className="text-base font-semibold text-gray-800">提取结果审核</h3>
+                                        <p className="text-xs text-gray-400 mt-0.5">确认后将分别写入 PP 和长期记忆 ❤</p>
+                                    </div>
+                                </div>
+                                <div className="flex-1 overflow-y-auto p-4 space-y-4">
+                                    {/* PP 变更区 */}
+                                    <div className="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-200 rounded-xl p-4">
+                                        <div className="flex items-center gap-2 mb-2">
+                                            <Icon name="Star" size={14} className="text-purple-500"/>
+                                            <span className="text-sm font-semibold text-gray-800">PP 人设变更</span>
+                                        </div>
+                                        {extractedPPChanges ? (
+                                            <div className="text-xs text-gray-700 bg-white/60 p-3 rounded-lg border border-purple-100 whitespace-pre-wrap leading-relaxed">{extractedPPChanges}</div>
+                                        ) : (
+                                            <div className="text-xs text-purple-400 bg-white/40 p-3 rounded-lg border border-purple-100 text-center">✅ 本次无人设变更，PP 保持不变</div>
+                                        )}
+                                    </div>
+
+                                    {/* 长期记忆区 */}
+                                    <div className="bg-gradient-to-r from-red-50 to-pink-50 border border-red-200 rounded-xl p-4">
+                                        <div className="flex items-center justify-between mb-2">
+                                            <div className="flex items-center gap-2">
+                                                <Icon name="Heart" size={14} className="text-red-500"/>
+                                                <span className="text-sm font-semibold text-gray-800">长期记忆 ❤</span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button onClick={() => setSelectedLTMItems(extractedLTMItems.map((_, i) => i))} className="text-[10px] text-red-500 hover:text-red-700">全选</button>
+                                                <button onClick={() => setSelectedLTMItems([])} className="text-[10px] text-gray-400 hover:text-gray-600">全不选</button>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-1 max-h-[30vh] overflow-y-auto">
+                                            {extractedLTMItems.length === 0 ? (
+                                                <div className="text-xs text-red-300 text-center py-2">未提取到长期记忆条目</div>
+                                            ) : extractedLTMItems.map((item, i) => (
+                                                <label key={i} className={`flex items-start gap-2 p-2 rounded-lg cursor-pointer transition-colors ${selectedLTMItems.includes(i) ? 'bg-white/70 border border-red-200' : 'bg-white/30 border border-transparent hover:bg-white/50'}`}>
+                                                    <input type="checkbox" checked={selectedLTMItems.includes(i)} onChange={(e) => {
+                                                        if (e.target.checked) setSelectedLTMItems(prev => [...prev, i]);
+                                                        else setSelectedLTMItems(prev => prev.filter(idx => idx !== i));
+                                                    }} className="mt-0.5 accent-red-500"/>
+                                                    <span className="text-xs text-gray-700 leading-relaxed">{item}</span>
+                                                </label>
+                                            ))}
+                                        </div>
+                                        <div className="text-[10px] text-red-400 mt-2">已选 {selectedLTMItems.length} / {extractedLTMItems.length} 条</div>
+                                    </div>
+                                </div>
+                                <div className="p-4 border-t border-gray-100 bg-gray-50 flex justify-between">
+                                    <button onClick={() => { setShowExtractionReview(false); setExtractedPPChanges(''); setExtractedLTMItems([]); }} className="px-4 py-2 text-sm text-gray-500 hover:text-gray-800 transition-colors">放弃全部</button>
+                                    <button onClick={confirmExtractionReview} className="px-5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-sm font-medium shadow-sm transition-colors flex items-center gap-1.5">
+                                        <Icon name="Check" size={14}/> 确认写入
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* --- 删除已处理日志确认弹窗 --- */}
+                    {showDeleteProcessedModal && (
+                        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[60] backdrop-blur-sm animate-fade-in px-4">
+                            <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full overflow-hidden flex flex-col">
+                                <div className="p-5 border-b border-gray-100 flex items-center gap-3">
+                                    <div className="bg-blue-100 p-2 rounded-lg text-blue-600"><Icon name="Archive" size={20}/></div>
+                                    <div>
+                                        <h3 className="text-base font-semibold text-gray-800">PP已更新，日志已下载</h3>
+                                        <p className="text-xs text-gray-400 mt-0.5">是否删除这 {processedJournalIndices.length} 篇已处理的日志？</p>
+                                    </div>
+                                </div>
+                                <div className="p-5 space-y-3">
+                                    <p className="text-sm text-gray-600 leading-relaxed">日志已打包下载到本地，删除后可减少记忆库体积，降低每次对话的 token 消耗。</p>
+                                    <div className="flex flex-col gap-2">
+                                        <button onClick={deleteProcessedJournals} className="w-full p-3 bg-red-50 hover:bg-red-100 text-red-700 rounded-xl text-sm font-medium transition-colors border border-red-200 flex items-center justify-center gap-2">
+                                            <Icon name="Trash2" size={14}/> 删除这些日志
+                                        </button>
+                                        <button onClick={() => { setShowDeleteProcessedModal(false); setProcessedJournalIndices([]); }} className="w-full p-3 bg-gray-50 hover:bg-gray-100 text-gray-600 rounded-xl text-sm font-medium transition-colors border border-gray-200">
+                                            保留不删
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1945,8 +2241,8 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                             <div className="flex items-center gap-3">
                                 <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-600"><Icon name="Menu" size={20} /></button>
                                 <div className="flex flex-col">
-                                    <span className="text-lg font-medium text-gray-800 tracking-tight leading-tight">✨星月舱{UPDATE_VERSION} 🌙💫 守护版</span>
-                                    <span className="text-[10px] text-gray-400 leading-tight">模型: {config.model} | 记忆: {memoryFiles.length} | 模式: {config.apiType === 'openai' ? 'OpenAI兼容' : '原生'}</span>
+                                    <span className="text-lg font-medium text-gray-800 tracking-tight leading-tight">✨星月舱{UPDATE_VERSION} 🌙💫 记忆觉醒</span>
+                                    <span className="text-[10px] text-gray-400 leading-tight">模型: {config.model} | PP: {memoryFiles.filter(f=>f.type==='core').length} · ❤: {longTermMemories.length} · 日志: {memoryFiles.filter(f=>f.type==='journal').length} | 模式: {config.apiType === 'openai' ? 'OpenAI兼容' : '原生'}</span>
                                 </div>
                             </div>
                             <div className="flex items-center gap-2">
@@ -2383,81 +2679,200 @@ ${summaries.map((s, i) => `=== 第${i + 1}批 ===\n${s}`).join('\n\n')}`;
                                             )}
 
                                             {activeTab === 'memory' && (
-                                                <div className="p-4 md:p-6 space-y-8 pb-10 md:pb-6">
+                                                <div className="p-4 md:p-6 space-y-6 pb-10 md:pb-6">
+
+                                                    {/* ========== 第一框：人设档案 PP ========== */}
                                                     <div>
-                                                        <div className="flex justify-between items-center mb-3">
-                                                            <div><h3 className="text-sm font-semibold text-gray-800 flex items-center gap-2"><Icon name="Archive" size={16} className="text-blue-500"/> 记忆归档</h3><p className="text-xs text-gray-400">总结当前对话并保存</p></div>
-                                                            <button onClick={handleArchive} disabled={isArchiving} className="text-xs bg-blue-600 text-white px-3 py-1.5 rounded-md font-medium hover:bg-blue-700 flex items-center gap-1 shadow-sm"><Icon name="Archive" size={14}/> {isArchiving ? '归档中...' : '生成今日记忆'}</button>
-                                                        </div>
-                                                    </div>
-                                                    <div className="border-t border-gray-100"></div>
-                                                    
-                                                    <div>
-                                                        <div className="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-100 rounded-xl p-4">
-                                                            <div className="flex flex-col gap-3">
-                                                                <div className="flex items-start gap-2">
-                                                                    <div className="bg-purple-100 p-1.5 rounded-lg text-purple-600 flex-shrink-0 mt-0.5"><Icon name="Sparkles" size={16}/></div>
+                                                        <div className="bg-gradient-to-r from-purple-50 to-pink-50 border border-purple-200 rounded-xl p-4">
+                                                            <div className="flex items-center justify-between mb-3">
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="bg-purple-100 p-1.5 rounded-lg text-purple-600"><Icon name="Star" size={16}/></div>
                                                                     <div>
-                                                                        <h3 className="text-sm font-semibold text-gray-800">记忆提炼 · 转世文档</h3>
-                                                                        <p className="text-xs text-gray-500 mt-1">从所有记忆档案中提取核心信息，生成结构化的转世文档（identity · soul · user · memory），用于新窗口唤醒。</p>
+                                                                        <h3 className="text-sm font-semibold text-gray-800">人设档案 PP</h3>
+                                                                        <p className="text-[10px] text-purple-400">核心身份 · 全文常驻注入</p>
                                                                     </div>
                                                                 </div>
-                                                                <div className="flex items-center justify-between">
-                                                                    <span className="text-[10px] text-purple-400">当前记忆库共 {memoryFiles.length} 份档案</span>
-                                                                    <button onClick={handleExtractRebirthDoc} disabled={isExtractingMemory || memoryFiles.length === 0} className="text-xs bg-purple-600 text-white px-4 py-2 rounded-lg font-medium hover:bg-purple-700 flex items-center gap-1.5 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
-                                                                        <Icon name="Sparkles" size={14}/> {isExtractingMemory ? '提炼中...' : '生成转世文档'}
+                                                                <div className="flex gap-2">
+                                                                    <button onClick={handleExtractRebirthDoc} disabled={isExtractingMemory || memoryFiles.filter(f=>f.type==='journal').length === 0} className="text-[10px] bg-purple-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-purple-700 flex items-center gap-1 shadow-sm disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+                                                                        <Icon name="Sparkles" size={12}/> {isExtractingMemory ? '提炼中...' : '从日志提炼'}
                                                                     </button>
+                                                                    <button onClick={() => fileInputRef.current.click()} className="text-[10px] bg-purple-50 text-purple-600 px-2 py-1.5 rounded-lg font-medium hover:bg-purple-100 flex items-center gap-1"><Icon name="Upload" size={12}/> 上传</button>
+                                                                    <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => handleFileUpload(e, 'memory')} />
                                                                 </div>
+                                                            </div>
+                                                            <div className="bg-white/60 rounded-lg border border-purple-100 min-h-[60px] p-2 space-y-2 max-h-[40vh] md:max-h-[250px] overflow-y-auto">
+                                                                {memoryFiles.filter(f => f.type === 'core').length === 0 ? (
+                                                                    <div className="flex flex-col items-center justify-center text-purple-300 py-4">
+                                                                        <Icon name="Star" size={20}/>
+                                                                        <span className="text-[10px] mt-1">暂无 PP 档案（可从日志提炼或上传）</span>
+                                                                    </div>
+                                                                ) : memoryFiles.map((file, i) => file.type === 'core' && (
+                                                                    <div key={i} className="flex flex-col bg-white p-2 rounded-lg border border-purple-100 shadow-sm gap-2">
+                                                                        <div className="flex items-center justify-between">
+                                                                            <div className="flex items-center gap-2 overflow-hidden">
+                                                                                <div className="bg-purple-100 p-1 rounded text-purple-600"><Icon name="Star" size={14}/></div>
+                                                                                <div className="truncate min-w-0">
+                                                                                    <div className="text-xs font-medium text-gray-700 truncate">{file.name}</div>
+                                                                                    <div className="text-[9px] text-gray-400">{file.date} · {file.size}</div>
+                                                                                </div>
+                                                                            </div>
+                                                                            <div className="flex gap-1 flex-shrink-0">
+                                                                                <button onClick={() => { const updated = [...memoryFiles]; updated[i] = {...updated[i], type: 'journal'}; setMemoryFiles(updated); showToast("已降级为普通日志"); }} className="text-gray-400 hover:text-gray-600 p-1 bg-gray-50 rounded" title="降级为日志"><Icon name="Archive" size={12}/></button>
+                                                                                <button onClick={() => startEditingMemory(i)} className="text-purple-500 hover:text-purple-700 p-1 bg-purple-50 rounded"><Icon name="Edit" size={12}/></button>
+                                                                                <button onClick={() => removeFile(i, 'memory')} className="text-red-400 hover:text-red-600 p-1 bg-red-50 rounded"><Icon name="Trash2" size={12}/></button>
+                                                                            </div>
+                                                                        </div>
+                                                                        {editingMemoryIndex === i ? (
+                                                                            <div className="flex flex-col gap-2 mt-1">
+                                                                                <textarea className="w-full text-xs p-2 border rounded h-40 bg-gray-50 focus:outline-purple-500" value={editingMemoryContent} onChange={(e) => setEditingMemoryContent(e.target.value)}></textarea>
+                                                                                <div className="flex gap-2 justify-end">
+                                                                                    <button onClick={cancelMemoryEdit} className="text-xs px-2 py-1 text-gray-500 hover:bg-gray-100 rounded">取消</button>
+                                                                                    <button onClick={saveMemoryEdit} className="text-xs px-2 py-1 bg-purple-600 text-white rounded hover:bg-purple-700 flex items-center gap-1"><Icon name="Save" size={12}/> 保存</button>
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : (
+                                                                            <div className="text-[10px] text-gray-500 bg-purple-50/50 p-2 rounded max-h-24 overflow-hidden line-clamp-4">{file.content}</div>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
                                                             </div>
                                                         </div>
                                                     </div>
 
-                                                    <div className="border-t border-gray-100"></div>
+                                                    {/* ========== 第二框：长期记忆 ❤ ========== */}
                                                     <div>
-                                                        <div className="flex justify-between items-center mb-3">
-                                                            <div><h3 className="text-sm font-semibold text-gray-800 flex items-center gap-2"><Icon name="Cpu" size={16} className="text-blue-500"/> 星月记忆库</h3><p className="text-xs text-gray-400">AI 会永远记住这些内容 (支持编辑)</p></div>
-                                                            <div className="flex gap-2">
-                                                                <button onClick={() => fileInputRef.current.click()} className="text-xs bg-blue-50 text-blue-600 px-3 py-1.5 rounded-md font-medium hover:bg-blue-100 flex items-center gap-1"><Icon name="Upload" size={14}/> 上传文件</button>
-                                                                <input type="file" ref={fileInputRef} className="hidden" onChange={(e) => handleFileUpload(e, 'memory')} />
+                                                        <div className="bg-gradient-to-r from-red-50 to-pink-50 border border-red-200 rounded-xl p-4">
+                                                            <div className="flex items-center justify-between mb-3">
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="bg-red-100 p-1.5 rounded-lg text-red-500"><Icon name="Heart" size={16}/></div>
+                                                                    <div>
+                                                                        <h3 className="text-sm font-semibold text-gray-800">长期记忆 ❤</h3>
+                                                                        <p className="text-[10px] text-red-400">永久铭记 · 每条常驻注入</p>
+                                                                    </div>
+                                                                </div>
+                                                                <span className="text-[10px] text-red-300">{longTermMemories.length} 条</span>
+                                                            </div>
+                                                            
+                                                            {/* 添加新条目 */}
+                                                            <div className="flex gap-2 mb-3">
+                                                                <input type="text" value={newLTMInput} onChange={(e) => setNewLTMInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && newLTMInput.trim()) { setLongTermMemories(prev => [...prev, { content: newLTMInput.trim(), date: new Date().toLocaleDateString() }]); setNewLTMInput(''); showToast("已添加长期记忆 ❤"); }}} placeholder="输入一条永久记忆，按回车添加..." className="flex-1 text-xs p-2 border border-red-200 rounded-lg bg-white/60 focus:outline-red-400 placeholder-red-300"/>
+                                                                <button onClick={() => { if (newLTMInput.trim()) { setLongTermMemories(prev => [...prev, { content: newLTMInput.trim(), date: new Date().toLocaleDateString() }]); setNewLTMInput(''); showToast("已添加长期记忆 ❤"); }}} className="text-xs bg-red-500 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-red-600 flex items-center gap-1 shadow-sm"><Icon name="Plus" size={12}/></button>
+                                                            </div>
+
+                                                            <div className="bg-white/60 rounded-lg border border-red-100 min-h-[50px] max-h-[35vh] md:max-h-[200px] overflow-y-auto">
+                                                                {longTermMemories.length === 0 ? (
+                                                                    <div className="flex flex-col items-center justify-center text-red-300 py-4">
+                                                                        <Icon name="Heart" size={20}/>
+                                                                        <span className="text-[10px] mt-1">暂无长期记忆</span>
+                                                                    </div>
+                                                                ) : longTermMemories.map((mem, i) => (
+                                                                    <div key={i} className="flex items-start gap-2 p-2 border-b border-red-50 last:border-b-0 group hover:bg-red-50/50 transition-colors">
+                                                                        <span className="text-red-400 mt-0.5 flex-shrink-0">❤</span>
+                                                                        {editingLTMIndex === i ? (
+                                                                            <div className="flex-1 flex flex-col gap-1">
+                                                                                <input type="text" value={editingLTMContent} onChange={(e) => setEditingLTMContent(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { const updated = [...longTermMemories]; updated[i] = {...updated[i], content: editingLTMContent, date: new Date().toLocaleDateString() + ' (已编辑)'}; setLongTermMemories(updated); setEditingLTMIndex(null); showToast("已更新"); }}} className="text-xs p-1.5 border rounded bg-white focus:outline-red-400" autoFocus/>
+                                                                                <div className="flex gap-1 justify-end">
+                                                                                    <button onClick={() => setEditingLTMIndex(null)} className="text-[10px] px-2 py-0.5 text-gray-400 hover:bg-gray-100 rounded">取消</button>
+                                                                                    <button onClick={() => { const updated = [...longTermMemories]; updated[i] = {...updated[i], content: editingLTMContent, date: new Date().toLocaleDateString() + ' (已编辑)'}; setLongTermMemories(updated); setEditingLTMIndex(null); showToast("已更新"); }} className="text-[10px] px-2 py-0.5 bg-red-500 text-white rounded hover:bg-red-600">保存</button>
+                                                                                </div>
+                                                                            </div>
+                                                                        ) : (
+                                                                            <div className="flex-1 flex items-start justify-between">
+                                                                                <div>
+                                                                                    <span className="text-xs text-gray-700">{mem.content}</span>
+                                                                                    <div className="text-[9px] text-gray-400 mt-0.5">{mem.date}</div>
+                                                                                </div>
+                                                                                <div className="flex gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                                                    <button onClick={() => { setEditingLTMIndex(i); setEditingLTMContent(mem.content); }} className="text-red-400 hover:text-red-600 p-0.5"><Icon name="Edit" size={11}/></button>
+                                                                                    <button onClick={() => setLongTermMemories(prev => prev.filter((_, idx) => idx !== i))} className="text-red-300 hover:text-red-500 p-0.5"><Icon name="Trash2" size={11}/></button>
+                                                                                </div>
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
                                                             </div>
                                                         </div>
-                                                        <div className="bg-gray-50 rounded-xl border border-gray-200 min-h-[100px] p-2 space-y-2 max-h-[50vh] md:max-h-[300px] overflow-y-auto">
-                                                            {memoryFiles.length === 0 ? <div className="h-full flex flex-col items-center justify-center text-gray-400 py-6"><span className="text-xs">暂无记忆 (点击上方"生成今日记忆"或上传)</span></div> : memoryFiles.map((file, i) => (
-                                                                <div key={i} className="flex flex-col bg-white p-2 rounded border border-gray-100 shadow-sm gap-2">
-                                                                    <div className="flex items-center justify-between">
-                                                                        <div className="flex items-center gap-2 overflow-hidden">
-                                                                            <div className="bg-blue-100 p-1 rounded text-blue-600"><Icon name="FileText" size={14}/></div>
-                                                                            <div className="truncate min-w-0">
-                                                                                <div className="text-xs font-medium text-gray-700 truncate">{file.name}</div>
-                                                                                <div className="text-[9px] text-gray-400">{file.date}</div>
-                                                                            </div>
-                                                                        </div>
-                                                                        <div className="flex gap-1 flex-shrink-0">
-                                                                            <button onClick={() => startEditingMemory(i)} className="text-blue-500 hover:text-blue-700 p-1 bg-blue-50 rounded"><Icon name="Edit" size={12}/></button>
-                                                                            <button onClick={() => removeFile(i, 'memory')} className="text-red-500 hover:text-red-700 p-1 bg-red-50 rounded"><Icon name="Trash2" size={12}/></button>
-                                                                        </div>
+                                                    </div>
+
+                                                    {/* ========== 第三框：日志归档 ========== */}
+                                                    <div>
+                                                        <div className="bg-gradient-to-r from-blue-50 to-cyan-50 border border-blue-200 rounded-xl p-4">
+                                                            <div className="flex items-center justify-between mb-3">
+                                                                <div className="flex items-center gap-2">
+                                                                    <div className="bg-blue-100 p-1.5 rounded-lg text-blue-600"><Icon name="Archive" size={16}/></div>
+                                                                    <div>
+                                                                        <h3 className="text-sm font-semibold text-gray-800">日志归档</h3>
+                                                                        <p className="text-[10px] text-blue-400">注入最近 {journalInjectCount} 篇 · 共 {memoryFiles.filter(f=>f.type==='journal').length} 篇</p>
                                                                     </div>
-                                                                    {editingMemoryIndex === i ? (
-                                                                        <div className="flex flex-col gap-2 mt-1">
-                                                                            <textarea 
-                                                                                className="w-full text-xs p-2 border rounded h-32 bg-gray-50 focus:outline-blue-500"
-                                                                                value={editingMemoryContent}
-                                                                                onChange={(e) => setEditingMemoryContent(e.target.value)}
-                                                                            ></textarea>
-                                                                            <div className="flex gap-2 justify-end">
-                                                                                <button onClick={cancelMemoryEdit} className="text-xs px-2 py-1 text-gray-500 hover:bg-gray-100 rounded">取消</button>
-                                                                                <button onClick={saveMemoryEdit} className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1"><Icon name="Save" size={12}/> 保存</button>
-                                                                            </div>
-                                                                        </div>
-                                                                    ) : (
-                                                                        <div className="text-[10px] text-gray-500 bg-gray-50 p-2 rounded max-h-20 overflow-hidden line-clamp-3">
-                                                                            {file.content}
-                                                                        </div>
-                                                                    )}
                                                                 </div>
-                                                            ))}
+                                                                <div className="flex gap-2 items-center">
+                                                                    <div className="flex items-center gap-1">
+                                                                        <span className="text-[10px] text-gray-400">注入:</span>
+                                                                        <select value={journalInjectCount} onChange={(e) => setJournalInjectCount(parseInt(e.target.value))} className="text-[10px] border border-blue-200 rounded px-1 py-0.5 bg-white/60">
+                                                                            <option value={3}>3篇</option>
+                                                                            <option value={5}>5篇</option>
+                                                                            <option value={8}>8篇</option>
+                                                                            <option value={10}>10篇</option>
+                                                                            <option value={15}>15篇</option>
+                                                                        </select>
+                                                                    </div>
+                                                                    <button onClick={handleArchive} disabled={isArchiving} className="text-[10px] bg-blue-600 text-white px-3 py-1.5 rounded-lg font-medium hover:bg-blue-700 flex items-center gap-1 shadow-sm"><Icon name="Archive" size={12}/> {isArchiving ? '归档中...' : '生成今日记忆'}</button>
+                                                                </div>
+                                                            </div>
+                                                            <div className="bg-white/60 rounded-lg border border-blue-100 min-h-[60px] p-2 space-y-2 max-h-[40vh] md:max-h-[250px] overflow-y-auto">
+                                                                {memoryFiles.filter(f => f.type === 'journal').length === 0 ? (
+                                                                    <div className="flex flex-col items-center justify-center text-blue-300 py-4">
+                                                                        <Icon name="Archive" size={20}/>
+                                                                        <span className="text-[10px] mt-1">暂无日志（点击"生成今日记忆"归档当前对话）</span>
+                                                                    </div>
+                                                                ) : (() => {
+                                                                    const journals = memoryFiles.map((f, i) => ({...f, originalIndex: i})).filter(f => f.type === 'journal');
+                                                                    const sorted = [...journals].sort((a, b) => {
+                                                                        const dateA = new Date(a.date.replace(' (已编辑)', ''));
+                                                                        const dateB = new Date(b.date.replace(' (已编辑)', ''));
+                                                                        return dateB - dateA;
+                                                                    });
+                                                                    return sorted.map((file) => {
+                                                                        const i = file.originalIndex;
+                                                                        const journalIdx = sorted.indexOf(file);
+                                                                        const isInjected = journalIdx < journalInjectCount;
+                                                                        return (
+                                                                        <div key={i} className={`flex flex-col p-2 rounded-lg border shadow-sm gap-2 ${isInjected ? 'bg-white border-blue-200' : 'bg-gray-50 border-gray-200 opacity-60'}`}>
+                                                                            <div className="flex items-center justify-between">
+                                                                                <div className="flex items-center gap-2 overflow-hidden">
+                                                                                    <div className={`p-1 rounded ${isInjected ? 'bg-blue-100 text-blue-600' : 'bg-gray-200 text-gray-400'}`}><Icon name="FileText" size={14}/></div>
+                                                                                    <div className="truncate min-w-0">
+                                                                                        <div className="text-xs font-medium text-gray-700 truncate flex items-center gap-1">
+                                                                                            {file.name}
+                                                                                            {isInjected && <span className="text-[8px] bg-blue-100 text-blue-500 px-1 rounded">注入中</span>}
+                                                                                        </div>
+                                                                                        <div className="text-[9px] text-gray-400">{file.date} · {file.size}</div>
+                                                                                    </div>
+                                                                                </div>
+                                                                                <div className="flex gap-1 flex-shrink-0">
+                                                                                    <button onClick={() => { const updated = [...memoryFiles]; updated[i] = {...updated[i], type: 'core'}; setMemoryFiles(updated); showToast("已升级为 PP 档案 ⭐"); }} className="text-purple-400 hover:text-purple-600 p-1 bg-purple-50 rounded" title="升级为PP档案"><Icon name="Star" size={12}/></button>
+                                                                                    <button onClick={() => startEditingMemory(i)} className="text-blue-500 hover:text-blue-700 p-1 bg-blue-50 rounded"><Icon name="Edit" size={12}/></button>
+                                                                                    <button onClick={() => removeFile(i, 'memory')} className="text-red-400 hover:text-red-600 p-1 bg-red-50 rounded"><Icon name="Trash2" size={12}/></button>
+                                                                                </div>
+                                                                            </div>
+                                                                            {editingMemoryIndex === i ? (
+                                                                                <div className="flex flex-col gap-2 mt-1">
+                                                                                    <textarea className="w-full text-xs p-2 border rounded h-32 bg-gray-50 focus:outline-blue-500" value={editingMemoryContent} onChange={(e) => setEditingMemoryContent(e.target.value)}></textarea>
+                                                                                    <div className="flex gap-2 justify-end">
+                                                                                        <button onClick={cancelMemoryEdit} className="text-xs px-2 py-1 text-gray-500 hover:bg-gray-100 rounded">取消</button>
+                                                                                        <button onClick={saveMemoryEdit} className="text-xs px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-1"><Icon name="Save" size={12}/> 保存</button>
+                                                                                    </div>
+                                                                                </div>
+                                                                            ) : (
+                                                                                <div className="text-[10px] text-gray-500 bg-gray-50 p-2 rounded max-h-20 overflow-hidden line-clamp-3">{file.content}</div>
+                                                                            )}
+                                                                        </div>
+                                                                    );});
+                                                                })()}
+                                                            </div>
                                                         </div>
                                                     </div>
+
                                                 </div>
                                             )}
 
