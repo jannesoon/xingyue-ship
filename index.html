@@ -517,14 +517,52 @@
                             sessions.sort((a, b) => b.timestamp - a.timestamp);
                             setHistorySessions(sessions);
                         }
-                    }).catch(e => console.error('[星月舱] 读取聊天记录失败', e));
+                        // ★ 关键修复：必须等 IndexedDB 读完才标记初始化完成
+                        // 否则 React state 还是空数组时，保存 useEffect 可能已经触发，
+                        // 会用空历史覆盖 setHistorySessions，导致侧边栏丢窗口
+                        isInitializedRef.current = true;
+                        console.log('[星月舱] 初始化完成，允许保存');
+                    }).catch(e => {
+                        console.error('[星月舱] 读取聊天记录失败', e);
+                        // 读取失败也要设为 true，否则永远不能保存
+                        isInitializedRef.current = true;
+                    });
                 });
                 
                 const storedHealth = localStorage.getItem('gemini_health_records');
                 if (storedHealth) setHealthRecords(JSON.parse(storedHealth));
                 
                 if (window.innerWidth < 768) setSidebarOpen(false);
-                isInitializedRef.current = true;
+                // ★ 已移除这里的 isInitializedRef.current = true，改为 IndexedDB 读完后再置 true
+            }, []);
+
+            // 页面关闭/刷新前的兜底保存（使用 ref 读取最新 state）
+            const messagesRef = useRef(messages);
+            const currentSessionIdRef = useRef(currentSessionId);
+            useEffect(() => { messagesRef.current = messages; }, [messages]);
+            useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
+            useEffect(() => {
+                const handler = () => {
+                    const msgs = messagesRef.current;
+                    const sid = currentSessionIdRef.current;
+                    if (sid && msgs && msgs.length > 0) {
+                        // 同步触发一次 IndexedDB 写入（浏览器可能拒绝异步，但最大努力）
+                        try {
+                            idbPutSession({
+                                id: sid,
+                                title: msgs[0]?.content?.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话',
+                                messages: msgs,
+                                timestamp: Date.now()
+                            });
+                        } catch(e) {}
+                    }
+                };
+                window.addEventListener('beforeunload', handler);
+                window.addEventListener('pagehide', handler);
+                return () => {
+                    window.removeEventListener('beforeunload', handler);
+                    window.removeEventListener('pagehide', handler);
+                };
             }, []);
 
             useEffect(() => {
@@ -545,6 +583,9 @@
             }, [config, memoryFiles, healthRecords, longTermMemories, journalInjectCount]);
 
             useEffect(() => {
+                // ★ 初始化未完成（IndexedDB 还没读完）时绝对不能写入
+                // 否则会用空 historySessions 覆盖真实数据
+                if (!isInitializedRef.current) return;
                 if (messages.length > 0 && currentSessionId) {
                     setHistorySessions(prevSessions => {
                         const existingSessionIndex = prevSessions.findIndex(s => s.id === currentSessionId);
@@ -676,10 +717,26 @@
                         if (cleanTitle) {
                             setHistorySessions(prev => {
                                 const updated = prev.map(s => s.id === targetSessionId ? { ...s, title: cleanTitle } : s);
-                                const updatedSession = updated.find(s => s.id === targetSessionId);
-                                if (updatedSession) idbPutSession(updatedSession).catch(e => console.error('自动标题同步 IndexedDB 失败', e));
                                 return updated;
                             });
+                            // ★ 关键修复：不要用 React state 里的 session 快照去覆盖数据库
+                            // 而是先从数据库读最新的 session，只改 title 字段再写回
+                            // 这样可以避免把后续聊天记录覆盖掉
+                            try {
+                                const db = await openDB();
+                                const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+                                const store = tx.objectStore(STORE_SESSIONS);
+                                const getReq = store.get(targetSessionId);
+                                getReq.onsuccess = () => {
+                                    const latest = getReq.result;
+                                    if (latest) {
+                                        latest.title = cleanTitle;
+                                        store.put(latest);
+                                    }
+                                };
+                            } catch (dbErr) {
+                                console.error('[星月舱] 标题更新数据库失败', dbErr);
+                            }
                         }
                     }
                 } catch (e) {
@@ -786,13 +843,35 @@
                 }
             };
 
-            const createNewSession = () => {
+            const createNewSession = async () => {
                 if (messages.length === 0 && !currentSessionId) return;
+                // 切换前，强制把当前会话 flush 到 IndexedDB，防止流式未完成就被顶掉
+                if (currentSessionId && messages.length > 0) {
+                    const sessionToFlush = {
+                        id: currentSessionId,
+                        title: (historySessions.find(s => s.id === currentSessionId)?.title) || messages[0]?.content.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话',
+                        messages: messages,
+                        timestamp: Date.now()
+                    };
+                    try { await idbPutSession(sessionToFlush); console.log('[星月舱] 切换前已 flush 当前会话'); }
+                    catch (e) { console.error('[星月舱] 切换前 flush 失败', e); }
+                }
                 setMessages([]); setAttachments([]); setCurrentSessionId(Date.now().toString());
                 if (window.innerWidth < 768) setSidebarOpen(false);
             };
 
-            const loadSession = (session) => {
+            const loadSession = async (session) => {
+                // 切换前也 flush 当前正在跑的会话
+                if (currentSessionId && currentSessionId !== session.id && messages.length > 0) {
+                    const sessionToFlush = {
+                        id: currentSessionId,
+                        title: (historySessions.find(s => s.id === currentSessionId)?.title) || messages[0]?.content.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话',
+                        messages: messages,
+                        timestamp: Date.now()
+                    };
+                    try { await idbPutSession(sessionToFlush); }
+                    catch (e) { console.error('[星月舱] loadSession 前 flush 失败', e); }
+                }
                 setMessages(session.messages); setCurrentSessionId(session.id); setAttachments([]);
                 if (window.innerWidth < 768) setSidebarOpen(false);
             };
@@ -1901,6 +1980,19 @@ ${batchContent}`;
                 const newHistory = [...messages, { role: 'user', content: finalContent, timestamp: nowTimestampStr, timestampRaw: now.getTime() }];
                 setMessages(newHistory); setInput(''); setAttachments([]);
 
+                // 首消息立即同步落盘，不等 useEffect，防止首轮丢失
+                if (isFirstMessage) {
+                    try {
+                        await idbPutSession({
+                            id: activeSessionId,
+                            title: finalContent.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话',
+                            messages: newHistory,
+                            timestamp: Date.now()
+                        });
+                        console.log('[星月舱] 首消息已立即落盘', activeSessionId);
+                    } catch (e) { console.error('[星月舱] 首消息落盘失败', e); }
+                }
+
                 try {
                     const { url, headers, payload } = generatePayload(newHistory, false);
                     let endpointUrl = url;
@@ -1919,11 +2011,22 @@ ${batchContent}`;
                         if (thinkMatch) { reasoningText = thinkMatch[1].trim() + (reasoningText ? '\n' + reasoningText : ''); aiText = aiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
                         if (!aiText && !reasoningText) aiText = "无回复";
                         aiText = processHealthTag(aiText);
-                        setMessages(prev => [...prev, { 
+                        const finalMsgs = [...newHistory, { 
                             role: 'model', content: aiText, reasoningContent: reasoningText, timestamp: getTimestamp(), timestampRaw: Date.now(), modelName: config.model,
                             variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
-                        }]);
+                        }];
+                        setMessages(finalMsgs);
                         setIsLoading(false);
+                        // 强制 flush 完整会话到 IndexedDB
+                        try {
+                            const existingTitle = historySessions.find(s => s.id === activeSessionId)?.title;
+                            await idbPutSession({
+                                id: activeSessionId,
+                                title: existingTitle || finalMsgs[0]?.content.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话',
+                                messages: finalMsgs,
+                                timestamp: Date.now()
+                            });
+                        } catch(e) { console.error('[星月舱] 非流式 flush 失败', e); }
                         if (isFirstMessage) autoGenerateTitle(activeSessionId, [...newHistory, { role: 'model', content: aiText }]);
                     } else {
                         setIsLoading(false);
@@ -1937,6 +2040,23 @@ ${batchContent}`;
                         while (true) {
                             const { done, value } = await reader.read(); 
                             if (done) {
+                                // 流式结束后强制 flush——★ 必须用 ref 读最新 messages，避免用旧快照覆盖
+                                try {
+                                    // 等 React 应用完最后一次 setMessages（上面的 setMessages(prev=>...)）
+                                    // 再从 ref 读最新状态
+                                    await new Promise(r => setTimeout(r, 50));
+                                    const latestMsgs = messagesRef.current;
+                                    if (latestMsgs && latestMsgs.length > 0 && currentSessionIdRef.current === activeSessionId) {
+                                        const existingTitle = historySessions.find(s => s.id === activeSessionId)?.title;
+                                        await idbPutSession({
+                                            id: activeSessionId,
+                                            title: existingTitle || latestMsgs[0]?.content?.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话',
+                                            messages: latestMsgs,
+                                            timestamp: Date.now()
+                                        });
+                                        console.log('[星月舱] 流式结束已落盘', activeSessionId, '条数:', latestMsgs.length);
+                                    }
+                                } catch(e) { console.error('[星月舱] 流式 flush 失败', e); }
                                 if (isFirstMessage) autoGenerateTitle(activeSessionId, [...newHistory, { role: 'model', content: finalContentToTitle }]);
                                 break;
                             }
@@ -1967,10 +2087,24 @@ ${batchContent}`;
                     }
                 } catch (err) { 
                     setError(err.message); 
-                    setMessages(prev => [...prev, { 
-                        role: 'model', content: `错误: ${err.message}`, timestamp: getTimestamp(), modelName: config.model,
-                        variants: [{ content: `错误: ${err.message}`, reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
-                    }]); 
+                    setMessages(prev => {
+                        const msgs = [...prev];
+                        const last = msgs[msgs.length - 1];
+                        if (last && last.role === 'model') {
+                            const errContent = (last.content ? last.content + '\n\n' : '') + `⚠️ 连接中断: ${err.message}`;
+                            msgs[msgs.length - 1] = {
+                                ...last,
+                                content: errContent,
+                                variants: [{ ...(last.variants?.[0] || {}), content: errContent, reasoningContent: last.reasoningContent || '', modelName: config.model, timestamp: last.timestamp || getTimestamp() }],
+                                currentVariantIndex: 0
+                            };
+                            return msgs;
+                        }
+                        return [...prev, { 
+                            role: 'model', content: `⚠️ 请求失败: ${err.message}`, timestamp: getTimestamp(), modelName: config.model,
+                            variants: [{ content: `⚠️ 请求失败: ${err.message}`, reasoningContent: '', modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
+                        }];
+                    });
                     setIsLoading(false); 
                 }
             };
