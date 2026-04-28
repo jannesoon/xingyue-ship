@@ -98,7 +98,7 @@
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useEffect, useRef } = React;
+        const { useState, useEffect, useRef, useMemo, memo, useCallback } = React;
 
         const Icons = {
             Menu: () => <path d="M4 6h16M4 12h16M4 18h16" />,
@@ -262,12 +262,17 @@
             return cleaned;
         };
 
-        const MessageContent = ({ content }) => {
-            let cleaned = cleanRawLatex(content || "");
-            let html = marked.parse(cleaned);
-            html = renderLatex(html);
+        // ★ 性能优化：用 memo + useMemo 缓存 markdown/LaTeX 渲染结果
+        // 避免每次输入框打字时整个会话列表的所有消息都重新跑一遍 marked + KaTeX
+        const MessageContent = memo(({ content }) => {
+            const html = useMemo(() => {
+                const cleaned = cleanRawLatex(content || "");
+                let h = marked.parse(cleaned);
+                h = renderLatex(h);
+                return h;
+            }, [content]);
             return <div className="prose prose-sm max-w-none text-gray-700 leading-7" dangerouslySetInnerHTML={{ __html: html }} />;
-        };
+        });
 
         const Avatar = ({ role, config }) => {
             if (role === 'user' && config.userAvatar) return <div className="w-8 h-8 rounded-full flex-shrink-0 mt-1 shadow-sm overflow-hidden bg-gray-100 border border-gray-200"><img src={config.userAvatar} alt="User" className="w-full h-full object-cover" /></div>;
@@ -573,13 +578,32 @@
                 migrateSessionsFromLocalStorage().then(() => {
                     idbGetAllSessions().then(sessions => {
                         console.log('[星月舱] 从 IndexedDB 读取会话:', sessions?.length, '条');
+                        // ★ 会话数回退保护：如果这次读到的比上次记录的少超过 2 条，
+                        // 说明 IndexedDB 可能在写入中被打断、读到了残缺数据，
+                        // 此时不直接覆盖，先警告柒柒，避免新操作把残缺状态固化下来
+                        const lastKnownCount = parseInt(localStorage.getItem('xingyue_last_session_count') || '0');
+                        const currentCount = sessions?.length || 0;
+                        const suspiciousLoss = lastKnownCount > 0 && currentCount < lastKnownCount - 2;
+                        if (suspiciousLoss) {
+                            console.warn(`[星月舱] ⚠️ 检测到会话数异常：上次 ${lastKnownCount} 条，本次只读到 ${currentCount} 条`);
+                            // 仍然显示读到的数据（不能空着），但弹个提示让柒柒知道
+                            setTimeout(() => {
+                                if (typeof showToast === 'function') {
+                                    showToast(`⚠️ 历史比上次少了 ${lastKnownCount - currentCount} 条，先别新增对话，建议清缓存重开试试`);
+                                }
+                            }, 1000);
+                        }
                         if (sessions && sessions.length > 0) {
                             sessions.sort((a, b) => b.timestamp - a.timestamp);
                             setHistorySessions(sessions);
                         }
+                        // 更新快照（只在没异常时更新，异常时保留旧值，下次重开还能看到警告）
+                        if (!suspiciousLoss) {
+                            localStorage.setItem('xingyue_last_session_count', String(currentCount));
+                        }
                         // ★ 关键修复：必须等 IndexedDB 读完才标记初始化完成
                         // 否则 React state 还是空数组时，保存 useEffect 可能已经触发，
-                        // 会用空历史覆盖 setHistorySessions，导致侧边栏丢窗口
+                        // 会用空历史覆盖 setHistorySessions,导致侧边栏丢窗口
                         isInitializedRef.current = true;
                         console.log('[星月舱] 初始化完成，允许保存');
                     }).catch(e => {
@@ -599,10 +623,19 @@
             // 页面关闭/刷新前的兜底保存（使用 ref 读取最新 state）
             const messagesRef = useRef(messages);
             const currentSessionIdRef = useRef(currentSessionId);
+            // ★ IndexedDB 写入节流计时器，避免流式输出时每个字符都触发全量写入
+            const idbSaveTimerRef = useRef(null);
+            const pendingSaveSessionRef = useRef(null);
             useEffect(() => { messagesRef.current = messages; }, [messages]);
             useEffect(() => { currentSessionIdRef.current = currentSessionId; }, [currentSessionId]);
             useEffect(() => {
                 const handler = () => {
+                    // ★ 页面卸载前先 flush pending 的节流保存
+                    if (idbSaveTimerRef.current) {
+                        clearTimeout(idbSaveTimerRef.current);
+                        idbSaveTimerRef.current = null;
+                        pendingSaveSessionRef.current = null;
+                    }
                     const msgs = messagesRef.current;
                     const sid = currentSessionIdRef.current;
                     if (sid && msgs && msgs.length > 0) {
@@ -619,11 +652,21 @@
                         } catch(e) {}
                     }
                 };
+                // ★ visibilitychange 是手机浏览器最可靠的"页面切到后台"信号
+                // beforeunload/pagehide 在 iOS Safari 和"添加到主屏幕"伪 APP 中经常不触发
+                // 而 visibilitychange 在切走的瞬间就会触发，给我们抢救数据的机会
+                const visibilityHandler = () => {
+                    if (document.visibilityState === 'hidden') {
+                        handler();
+                    }
+                };
                 window.addEventListener('beforeunload', handler);
                 window.addEventListener('pagehide', handler);
+                document.addEventListener('visibilitychange', visibilityHandler);
                 return () => {
                     window.removeEventListener('beforeunload', handler);
                     window.removeEventListener('pagehide', handler);
+                    document.removeEventListener('visibilitychange', visibilityHandler);
                 };
             }, []);
 
@@ -665,18 +708,42 @@
                              const newSession = { id: currentSessionId, title: messages[0]?.content.slice(0, 20).replace(/!\[.*?\]\(.*?\)/g, '[图片]') || '新对话', messages: messages, timestamp: Date.now(), createdAt: Date.now() };
                             updatedSessions = [newSession, ...prevSessions];
                         }
-                        // 同步到 IndexedDB
+                        // ★ 节流写入 IndexedDB：500ms 内多次变化合并成一次写入
+                        // 流式输出时每蹦一个字都触发全量序列化+写入是卡顿主因，节流后能大幅减少主线程阻塞
                         const sessionToSave = updatedSessions.find(s => s.id === currentSessionId);
                         if (sessionToSave) {
-                            console.log('[星月舱] 保存会话到 IndexedDB:', currentSessionId, '消息数:', sessionToSave.messages?.length);
-                            idbPutSession(sessionToSave).then(() => {
-                                console.log('[星月舱] IndexedDB 写入成功');
-                            }).catch(e => console.error('[星月舱] 保存会话到 IndexedDB 失败', e));
+                            pendingSaveSessionRef.current = sessionToSave;
+                            if (idbSaveTimerRef.current) clearTimeout(idbSaveTimerRef.current);
+                            idbSaveTimerRef.current = setTimeout(() => {
+                                const toSave = pendingSaveSessionRef.current;
+                                if (toSave) {
+                                    idbPutSession(toSave).then(() => {
+                                        // ★ 写入成功后更新会话数快照，作为下次启动的"已知正常状态"基线
+                                        try { localStorage.setItem('xingyue_last_session_count', String(updatedSessions.length)); } catch(e) {}
+                                    }).catch(e => console.error('[星月舱] 节流保存会话到 IndexedDB 失败', e));
+                                    pendingSaveSessionRef.current = null;
+                                }
+                                idbSaveTimerRef.current = null;
+                            }, 500);
                         }
                         return updatedSessions;
                     });
                 }
             }, [messages, currentSessionId]);
+
+            // ★ 兜底：组件卸载或会话切换时，如果还有 pending 的保存就立刻 flush
+            useEffect(() => {
+                return () => {
+                    if (idbSaveTimerRef.current) {
+                        clearTimeout(idbSaveTimerRef.current);
+                        const toSave = pendingSaveSessionRef.current;
+                        if (toSave) {
+                            idbPutSession(toSave).catch(e => console.error('[星月舱] 卸载时 flush 失败', e));
+                            pendingSaveSessionRef.current = null;
+                        }
+                    }
+                };
+            }, []);
 
             useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, isLoading]);
 
@@ -907,6 +974,12 @@
 
             const createNewSession = async () => {
                 if (messages.length === 0 && !currentSessionId) return;
+                // ★ 先清掉 pending 的节流保存，避免与下面的同步 flush 重复
+                if (idbSaveTimerRef.current) {
+                    clearTimeout(idbSaveTimerRef.current);
+                    idbSaveTimerRef.current = null;
+                    pendingSaveSessionRef.current = null;
+                }
                 // 切换前，强制把当前会话 flush 到 IndexedDB，防止流式未完成就被顶掉
                 if (currentSessionId && messages.length > 0) {
                     const existing = historySessions.find(s => s.id === currentSessionId);
@@ -925,6 +998,12 @@
             };
 
             const loadSession = async (session) => {
+                // ★ 先清掉 pending 的节流保存
+                if (idbSaveTimerRef.current) {
+                    clearTimeout(idbSaveTimerRef.current);
+                    idbSaveTimerRef.current = null;
+                    pendingSaveSessionRef.current = null;
+                }
                 // 切换前也 flush 当前正在跑的会话
                 if (currentSessionId && currentSessionId !== session.id && messages.length > 0) {
                     const existing = historySessions.find(s => s.id === currentSessionId);
@@ -2097,6 +2176,12 @@ ${batchContent}`;
                         }];
                         setMessages(finalMsgs);
                         setIsLoading(false);
+                        // ★ 清掉 pending 的节流保存（即将做权威性同步 flush）
+                        if (idbSaveTimerRef.current) {
+                            clearTimeout(idbSaveTimerRef.current);
+                            idbSaveTimerRef.current = null;
+                            pendingSaveSessionRef.current = null;
+                        }
                         // 强制 flush 完整会话到 IndexedDB
                         try {
                             const existingTitle = historySessions.find(s => s.id === activeSessionId)?.title;
@@ -2120,6 +2205,12 @@ ${batchContent}`;
                         while (true) {
                             const { done, value } = await reader.read(); 
                             if (done) {
+                                // ★ 清掉 pending 的节流保存（即将做权威性同步 flush）
+                                if (idbSaveTimerRef.current) {
+                                    clearTimeout(idbSaveTimerRef.current);
+                                    idbSaveTimerRef.current = null;
+                                    pendingSaveSessionRef.current = null;
+                                }
                                 // 流式结束后强制 flush——★ 必须用 ref 读最新 messages，避免用旧快照覆盖
                                 try {
                                     // 等 React 应用完最后一次 setMessages（上面的 setMessages(prev=>...)）
@@ -2396,7 +2487,7 @@ ${batchContent}`;
                         </div>
                     )}
 
-                    <div className={`${sidebarOpen ? 'w-[280px]' : 'w-0'} bg-gray-50 transition-all duration-300 flex flex-col flex-shrink-0 relative border-r border-gray-200`}>
+                    <div className={`${sidebarOpen ? 'w-[280px]' : 'w-0 overflow-hidden invisible'} bg-gray-50 transition-all duration-300 flex flex-col flex-shrink-0 relative border-r border-gray-200`}>
                         <div className="p-4 pt-6 space-y-2">
                             <button onClick={createNewSession} className="flex items-center gap-3 bg-gray-200 hover:bg-gray-300 text-gray-700 px-4 py-3 rounded-full transition-colors w-full shadow-sm"><Icon name="Plus" className="text-gray-600" /><span className="text-sm font-medium">新对话</span></button>
                         </div>
