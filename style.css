@@ -40,12 +40,49 @@ body.theme-claude, html.theme-claude { background-color: #f5f4ef; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 4px; }
 ::-webkit-scrollbar-thumb:hover { background: #d1d5db; }
+/* ★★★ 关键防溢出保护：防止长 URL / 英数串 / 异常 HTML 把气泡撑爆出屏幕 ★★★ */
+.prose {
+    /* 保证 prose 自身不超过父容器宽度 */
+    max-width: 100%;
+    min-width: 0;
+    /* 长单词强制断行（CJK + 拉丁混排都安全）*/
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+.prose p, .prose li, .prose span, .prose a, .prose strong, .prose em, .prose blockquote {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    max-width: 100%;
+}
+
 .prose p { margin-bottom: 0.5em; }
-.prose pre { background: #f3f4f6; padding: 10px; border-radius: 8px; overflow-x: auto; }
-.prose code { background: #f3f4f6; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 0.9em; }
+.prose pre { background: #f3f4f6; padding: 10px; border-radius: 8px; overflow-x: auto; max-width: 100%; }
+.prose code { background: #f3f4f6; padding: 2px 4px; border-radius: 4px; font-family: monospace; font-size: 0.9em; word-break: break-all; }
 .prose ul { list-style-type: disc; padding-left: 1.5em; }
 .prose ol { list-style-type: decimal; padding-left: 1.5em; }
 .prose img { border-radius: 8px; max-width: 100%; max-height: 400px; margin: 10px 0; }
+
+/* AI 消息的 w-full 容器 + 用户气泡 双重保险 */
+.xy-user-bubble {
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* ★★★ 防止 AI 回复贴边：消息列整体留出左右安全距离 ★★★ */
+/* 父级 space-y-6 那个容器（AI 消息 w-full 会占满它）*/
+.space-y-6 {
+    padding-left: 4px;
+    padding-right: 4px;
+    box-sizing: border-box;
+    max-width: 100%;
+}
+
+/* AI 回复 prose 容器再额外预留一点呼吸感 */
+.prose.prose-sm {
+    padding-right: 4px;
+}
 details.normal-details { border: 1px solid #e5e7eb; border-radius: 8px; padding: 8px; background: #f9fafb; margin-top: 8px; }
 details.normal-details summary { cursor: pointer; font-size: 0.8em; color: #6b7280; font-weight: 500; }
 details.cot-details { border: 1px solid #e5e7eb; border-radius: 10px; margin-bottom: 12px; overflow: hidden; background: #fafafa; }
