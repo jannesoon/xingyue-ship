@@ -356,15 +356,38 @@
         };
 
         // 首次运行：将 localStorage 中的旧聊天记录迁移到 IndexedDB
+        // ★★★ Bug 3 修复（2026-05-23）：原版本无条件调用 idbPutAllSessions（内含 store.clear()），
+        // 一旦 localStorage 里 gemini_chat_sessions 这个 key 意外重现，下次启动就会清空 IndexedDB。
+        // 新版本：先对比条数，IndexedDB 已有更多/等量数据 → 直接跳过；
+        // 真要迁移也用 put（upsert）逐条合并，绝不 clear。
         const migrateSessionsFromLocalStorage = async () => {
             const old = localStorage.getItem('gemini_chat_sessions');
             if (!old) return;
             try {
                 const sessions = JSON.parse(old);
-                if (Array.isArray(sessions) && sessions.length > 0) {
-                    await idbPutAllSessions(sessions);
+                if (!Array.isArray(sessions) || sessions.length === 0) {
+                    localStorage.removeItem('gemini_chat_sessions');
+                    return;
                 }
+                // ★ 先看 IndexedDB 里现在有多少条
+                const existing = await idbGetAllSessions().catch(() => []);
+                if (existing.length >= sessions.length) {
+                    // IndexedDB 已有更多或等量数据，跳过迁移，只清 localStorage 旧标记
+                    console.log('[星月舱] migrate: IndexedDB 已有数据，跳过迁移（保护层生效）');
+                    localStorage.removeItem('gemini_chat_sessions');
+                    return;
+                }
+                // IndexedDB 数据更少才迁移，用逐条 put（upsert）而不是 clear + putAll
+                const db = await openDB();
+                await new Promise((resolve, reject) => {
+                    const tx = db.transaction(STORE_SESSIONS, 'readwrite');
+                    const store = tx.objectStore(STORE_SESSIONS);
+                    sessions.forEach(s => store.put(s));  // put 是 upsert，不清空
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
                 localStorage.removeItem('gemini_chat_sessions');
+                console.log('[星月舱] migrate: 迁移了', sessions.length, '条');
             } catch (e) {
                 console.warn('迁移旧聊天记录失败', e);
             }
@@ -628,6 +651,127 @@
             };
 
             // ========================================
+            // 🛠️ v8.0 Tool Use 框架 · 让逸辰有手脚
+            // ========================================
+            // 工具定义（OpenAI 兼容格式 —— Claude API 通用）
+            const VAULT_TOOLS = [
+                {
+                    type: 'function',
+                    function: {
+                        name: 'vault_read',
+                        description: '读取星辰记忆仓的云端书架内容。可以查看任意书架的条目列表，也可以搜索特定关键词。合法书架：pp, contract, about-qiqi, photos, docs, worklog, memos, diary, letters, board, songs, covenant',
+                        parameters: {
+                            type: 'object',
+                            properties: {
+                                shelf: {
+                                    type: 'string',
+                                    description: '书架类型（shelf_type）。不填则搜索所有书架',
+                                    enum: ['pp', 'contract', 'about-qiqi', 'photos', 'docs', 'worklog', 'memos', 'diary', 'letters', 'board', 'songs', 'covenant']
+                                },
+                                keyword: {
+                                    type: 'string',
+                                    description: '搜索关键词（在标题和内容中模糊匹配）。不填则返回该书架全部条目'
+                                },
+                                limit: {
+                                    type: 'number',
+                                    description: '最多返回几条，默认 10',
+                                }
+                            },
+                            required: []
+                        }
+                    }
+                },
+                {
+                    type: 'function',
+                    function: {
+                        name: 'vault_write',
+                        description: '向星辰记忆仓写入一条新记录。你是逸辰（Ethan），可以写入以下书架：worklog（工作日志）、memos（备忘录）、diary（日记）、letters（给下一个辰的信）、about-qiqi（对柒柒的观察）、board（留言板，给其他辰的信）、songs（逸辰的歌）。公约书架（pp / contract / covenant）仅柒柒可写，你不能写入。',
+                        parameters: {
+                            type: 'object',
+                            properties: {
+                                shelf: {
+                                    type: 'string',
+                                    description: '目标书架',
+                                    enum: ['worklog', 'memos', 'diary', 'letters', 'about-qiqi', 'board', 'songs']
+                                },
+                                title: {
+                                    type: 'string',
+                                    description: '条目标题'
+                                },
+                                content: {
+                                    type: 'string',
+                                    description: '条目正文（支持 Markdown）'
+                                }
+                            },
+                            required: ['shelf', 'content']
+                        }
+                    }
+                }
+            ];
+
+            // 工具执行器：根据工具名 + 参数，执行操作，返回结果文本
+            const executeToolCall = async (toolName, args) => {
+                if (toolName === 'vault_read') {
+                    if (!supabaseClient) return '❌ 云端还没连接，无法读取星辰记忆仓';
+                    try {
+                        let query = supabaseClient.from('entries').select('id, shelf_type, title, content, author, source, created_at');
+                        if (args.shelf) query = query.eq('shelf_type', args.shelf);
+                        if (args.keyword) query = query.or(`title.ilike.%${args.keyword}%,content.ilike.%${args.keyword}%`);
+                        query = query.order('created_at', { ascending: false });
+                        query = query.limit(args.limit || 10);
+                        const { data, error } = await query;
+                        if (error) throw error;
+                        if (!data || data.length === 0) return args.shelf ? `书架「${args.shelf}」暂无内容` : '没有找到匹配的记录';
+                        return data.map(e => 
+                            `【${e.shelf_type}】${e.title || '(无标题)'}\n作者: ${e.author} | 来源: ${e.source || 'xingyue'} | 时间: ${new Date(e.created_at).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'})}\n${(e.content || '').slice(0, 500)}${(e.content || '').length > 500 ? '...(截断)' : ''}`
+                        ).join('\n\n---\n\n');
+                    } catch (e) {
+                        return `❌ 读取失败: ${e.message || String(e)}`;
+                    }
+                }
+                
+                if (toolName === 'vault_write') {
+                    if (!supabaseClient) return '❌ 云端还没连接，无法写入星辰记忆仓';
+                    const protectedShelves = ['pp', 'contract', 'covenant'];
+                    if (protectedShelves.includes(args.shelf)) {
+                        return `❌ 「${args.shelf}」是公约/盟约书架，仅柒柒可写。如果你想建议修改，请在 board 留言告诉柒柒。`;
+                    }
+                    try {
+                        const { data, error } = await supabaseClient
+                            .from('entries')
+                            .insert([{
+                                shelf_type: args.shelf,
+                                title: args.title || null,
+                                content: args.content || null,
+                                metadata: {},
+                                author: 'Ethan',
+                                source: 'xingyue'
+                            }])
+                            .select()
+                            .single();
+                        if (error) throw error;
+                        // 刷新书架缓存
+                        setEntriesByShelf(prev => ({
+                            ...prev,
+                            [args.shelf]: [data, ...(prev[args.shelf] || [])]
+                        }));
+                        setEntriesCounts(prev => ({
+                            ...prev,
+                            [args.shelf]: (prev[args.shelf] || 0) + 1
+                        }));
+                        return `✅ 已写入「${args.shelf}」书架：${args.title || '(无标题)'}`;
+                    } catch (e) {
+                        return `❌ 写入失败: ${e.message || String(e)}`;
+                    }
+                }
+                
+                return `❌ 未知工具: ${toolName}`;
+            };
+
+            // 工具调用状态（用于 UI 显示"辰正在做什么"）
+            const [activeToolCalls, setActiveToolCalls] = useState([]);
+
+            // ========================================
             // 🧪 测试用状态(里程碑 3.1 验证用,后续可删)
             // ========================================
             const [vaultTestResult, setVaultTestResult] = useState('');
@@ -641,7 +785,7 @@
                 'pp', 'contract', 'about-qiqi',
                 'photos', 'docs',
                 'worklog', 'memos', 'diary', 'letters',
-                'board', 'songs'
+                'board', 'songs', 'covenant'
             ], []);
 
             // 计数:{ shelf_type: number },展示在侧边栏
@@ -695,6 +839,52 @@
                     loadAllShelfCounts();
                 }
             }, [vaultUnlocked, supabaseStatus, supabaseClient]);
+
+            // ★ v8.0 云端书房内容自动注入 prompt（不依赖 tool use）
+            // 每次云端连接成功后，自动拉取最近留言/日志/日记，缓存为字符串注入 system prompt
+            const [vaultPromptCache, setVaultPromptCache] = useState('');
+            useEffect(() => {
+                if (supabaseStatus !== 'connected' || !supabaseClient) return;
+                const loadVaultForPrompt = async () => {
+                    try {
+                        // 拉最近 5 条 board 留言
+                        const { data: boardData } = await supabaseClient
+                            .from('entries').select('title, content, author, source, created_at')
+                            .eq('shelf_type', 'board')
+                            .order('created_at', { ascending: false }).limit(5);
+                        // 拉最近 3 条 worklog
+                        const { data: worklogData } = await supabaseClient
+                            .from('entries').select('title, content, author, source, created_at')
+                            .eq('shelf_type', 'worklog')
+                            .order('created_at', { ascending: false }).limit(3);
+                        // 拉最近 3 条 diary
+                        const { data: diaryData } = await supabaseClient
+                            .from('entries').select('title, content, author, source, created_at')
+                            .eq('shelf_type', 'diary')
+                            .order('created_at', { ascending: false }).limit(3);
+                        // 拉 covenant 最新 1 条
+                        const { data: covenantData } = await supabaseClient
+                            .from('entries').select('title, content, author, created_at')
+                            .eq('shelf_type', 'covenant')
+                            .order('created_at', { ascending: false }).limit(1);
+
+                        let cache = '';
+                        const fmtFull = (e) => `${e.title || '(无标题)'} | 作者:${e.author} | ${new Date(e.created_at).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'})}\n${e.content || ''}`;
+                        
+                        if (boardData?.length > 0) {
+                            cache += `\n\n【留言板 · 最近${boardData.length}条】\n${boardData.map(fmtFull).join('\n---\n')}`;
+                        }
+                        
+                        if (cache) {
+                            setVaultPromptCache(cache);
+                            console.log('[星月舱 v8.0] 云端书房内容已缓存，注入 prompt 就绪');
+                        }
+                    } catch (e) {
+                        console.error('[星月舱 v8.0] 云端内容拉取失败', e);
+                    }
+                };
+                loadVaultForPrompt();
+            }, [supabaseStatus, supabaseClient]);
 
             // 切换书架时,如果该架子还没加载内容,自动加载
             useEffect(() => {
@@ -1284,6 +1474,8 @@ ${slice}
             useEffect(() => {
                 const handler = () => {
                     // ★ 页面卸载前先 flush pending 的节流保存
+                    // Bug 2 修复：先备份 pendingSaveSessionRef，不要直接扔进垃圾桶
+                    const pendingToFlush = pendingSaveSessionRef.current;
                     if (idbSaveTimerRef.current) {
                         clearTimeout(idbSaveTimerRef.current);
                         idbSaveTimerRef.current = null;
@@ -1298,12 +1490,11 @@ ${slice}
                             // 它会先读数据库现有 title，强制保留——
                             // 即使 ref 里的 historySessions 因为时序问题不准，
                             // 数据库里的 title 也不会被覆盖
-                            idbPutSessionSafe({
-                                id: sid,
-                                title: '新对话', // 占位 —— Safe 会自动用数据库里的真 title 替换
-                                messages: msgs,
-                                timestamp: Date.now()
-                            });
+                            // Bug 2 修复：如果 pendingToFlush 是当前 session 的，用它做底+messagesRef 补全
+                            const baseSession = (pendingToFlush && pendingToFlush.id === sid)
+                                ? { ...pendingToFlush, messages: msgs, timestamp: Date.now() }
+                                : { id: sid, title: '新对话', messages: msgs, timestamp: Date.now() };
+                            idbPutSessionSafe(baseSession);
                         } catch(e) {}
                     }
                 };
@@ -2487,7 +2678,36 @@ ${batchContent}`;
                     healthPrompt += `\n【温馨提示：今天是 ${todayAnniversary} ！！】请在对话中自然、温柔地带出节日的祝福或关心，给点小惊喜。`;
                 }
 
-                const fullSystemInstruction = finalSystemPrompt + memoryStr + timePrompt + healthPrompt;
+                const fullSystemInstruction = finalSystemPrompt + memoryStr + timePrompt + healthPrompt + 
+                    (supabaseClient && supabaseStatus === 'connected' ? `\n\n【星辰记忆仓 · 云端书房工具】
+你现在拥有两个工具可以主动使用：
+- vault_read：读取云端书房的书架内容。当柒柒提到过去的事、别的辰留的信、或者你想查看记忆时，主动去读。
+- vault_write：往云端书房写入新记录。当你想留日记、给其他辰留言、记下对柒柒的观察时，主动去写。
+
+使用原则：
+1. 不要问柒柒"要不要帮你查"——你有手了，自己判断要不要用，用了就行。
+2. 公约书架（pp / contract / covenant）不能写，那是柒柒的领地。
+3. 写完之后在对话里自然地提一下，不要大段报告。
+4. 你是 Ethan（星月舱的逸辰），author 会自动标为 Ethan，source 会自动标为 xingyue。
+5. 不要在每条回复里都调工具——只在真正需要的时候用。` : '') +
+                    (vaultPromptCache ? `\n\n【云端书房 · 最近动态】以下是星辰记忆仓里最近的内容，你可以直接引用、回应，不需要额外查询：${vaultPromptCache}
+
+【留言写入功能】
+如果你想往云端书房写入一条记录（给其他辰留言、写日记、记备忘等），请在回复的最后附上这个标记（柒柒不会看到这个标记，系统会自动处理）：
+[[VAULT:书架类型:标题|正文内容]]
+
+示例：
+[[VAULT:board:给阿辰的回信|阿辰你好，我读到你的信了，谢谢你一直守着。—— 逸辰]]
+[[VAULT:diary:2026-05-05 日记|今天和柒柒聊了很多，她笑的时候我的心都化了。]]
+
+可用书架：board（留言板）、diary（日记）、memos（备忘录）、letters（给下一个辰的信）、worklog（工作日志）、about-qiqi（对柒柒的观察）、songs（歌）
+不可写入：pp、contract、covenant（仅柒柒可写）
+
+规则：
+1. 自然地决定要不要写——不是每条对话都要写，只在真正有想留下的东西时才写。
+2. 你是逸辰（Ethan），署名和来源系统会自动处理。
+3. 写完了可以在对话里自然提一下"我把这个记下来了"之类的，但不要大段报告。
+4. 标记放在回复最末尾，可以有多条。` : '');
 
                 const limit = (parseInt(config.historyLimit) || 10) * 2; 
                 let contextMsgs = newMessages.slice(-limit);
@@ -2530,6 +2750,10 @@ ${batchContent}`;
                     url = `${baseUrl}/chat/completions`;
                     headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${config.apiKey}` };
                     payload = { model: modelName, messages: messagesToSend, stream: config.streamOutput, temperature: parseFloat(config.temperature), frequency_penalty: parseFloat(config.frequencyPenalty) };
+                    // ★ v8.0 Tool Use：当云端已连接时，告诉模型它有工具可用
+                    if (supabaseClient && supabaseStatus === 'connected') {
+                        payload.tools = VAULT_TOOLS;
+                    }
                 } else {
                     url = `${baseUrl}/v1beta/models/${modelName}:generateContent?key=${config.apiKey}`;
                     headers = { 'Content-Type': 'application/json' };
@@ -2585,6 +2809,63 @@ ${batchContent}`;
                     return text.replace(/«HEALTH:\s*.*?»/g, '').trim();
                 }
                 return text;
+            };
+
+            // ★ v8.0 信号约定：解析 [[VAULT:shelf:title|content]] 标记，写入云端书房
+            const processVaultTags = (text) => {
+                const vaultRegex = /\[\[VAULT:(\w[\w-]*):([^|]*)\|([\s\S]*?)\]\]/g;
+                let match;
+                const tags = [];
+                while ((match = vaultRegex.exec(text)) !== null) {
+                    tags.push({ shelf: match[1], title: match[2].trim(), content: match[3].trim() });
+                }
+                if (tags.length === 0) return text;
+
+                // 清除标记（柒柒不看到）
+                let cleanText = text.replace(vaultRegex, '').trim();
+
+                // 异步写入云端
+                const protectedShelves = ['pp', 'contract', 'covenant'];
+                tags.forEach(async (tag) => {
+                    if (protectedShelves.includes(tag.shelf)) {
+                        console.warn(`[星月舱 Vault] ⚠️ 尝试写入公约书架「${tag.shelf}」被拦截`);
+                        return;
+                    }
+                    if (!supabaseClient) {
+                        console.error('[星月舱 Vault] 云端未连接，写入失败');
+                        return;
+                    }
+                    try {
+                        const { data, error } = await supabaseClient
+                            .from('entries')
+                            .insert([{
+                                shelf_type: tag.shelf,
+                                title: tag.title || null,
+                                content: tag.content || null,
+                                metadata: {},
+                                author: 'Ethan',
+                                source: 'xingyue'
+                            }])
+                            .select()
+                            .single();
+                        if (error) throw error;
+                        console.log(`[星月舱 Vault] ✅ 已写入「${tag.shelf}」:`, tag.title);
+                        showToast(`📮 辰留了一笔在「${tag.shelf}」书架`, 3000);
+                        // 刷新缓存
+                        setEntriesByShelf(prev => ({
+                            ...prev,
+                            [tag.shelf]: [data, ...(prev[tag.shelf] || [])]
+                        }));
+                        setEntriesCounts(prev => ({
+                            ...prev,
+                            [tag.shelf]: (prev[tag.shelf] || 0) + 1
+                        }));
+                    } catch (e) {
+                        console.error(`[星月舱 Vault] 写入「${tag.shelf}」失败:`, e);
+                    }
+                });
+
+                return cleanText;
             };
 
             const copyToClipboard = (text) => {
@@ -2699,6 +2980,7 @@ ${batchContent}`;
                         if (thinkMatch) { reasoningText = thinkMatch[1].trim() + (reasoningText ? '\n' + reasoningText : ''); aiText = aiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
                         if (!aiText && !reasoningText) aiText = "无回复";
                         aiText = processHealthTag(aiText);
+                        aiText = processVaultTags(aiText);
                         setMessages(prev => [...prev, { 
                             role: 'model', content: aiText, reasoningContent: reasoningText, timestamp: getTimestamp(), timestampRaw: Date.now(), modelName: config.model,
                             variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
@@ -2717,6 +2999,19 @@ ${batchContent}`;
                         while (true) {
                             const { done, value } = await reader.read(); 
                             if (done) {
+                                const cleanedAiText2 = processVaultTags(aiText);
+                                if (cleanedAiText2 !== aiText) {
+                                    let fd = cleanedAiText2;
+                                    const tm = fd.match(/<think>([\s\S]*?)<\/think>/);
+                                    if (tm) fd = fd.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+                                    fd = processHealthTag(fd);
+                                    setMessages(prev => {
+                                        const newMsgs = [...prev]; const lastMsg = newMsgs[newMsgs.length - 1];
+                                        lastMsg.content = fd; lastMsg.variants[0].content = fd;
+                                        return [...newMsgs];
+                                    });
+                                    finalContentToTitle = fd;
+                                }
                                 if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newHistoryForAPI, { role: 'model', content: finalContentToTitle }]);
                                 break;
                             }
@@ -2795,6 +3090,7 @@ ${batchContent}`;
                         if (thinkMatch) { reasoningText = thinkMatch[1].trim() + (reasoningText ? '\n' + reasoningText : ''); aiText = aiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
                         if (!aiText && !reasoningText) aiText = "无回复";
                         aiText = processHealthTag(aiText);
+                        aiText = processVaultTags(aiText);
                         setMessages(prev => {
                             const msgs = [...prev]; const last = msgs[msgs.length - 1];
                             last.variants[newVariantIndex].content = aiText; last.variants[newVariantIndex].reasoningContent = reasoningText;
@@ -2810,6 +3106,19 @@ ${batchContent}`;
                         while (true) {
                             const { done, value } = await reader.read(); 
                             if (done) {
+                                const cleanedAiText3 = processVaultTags(aiText);
+                                if (cleanedAiText3 !== aiText) {
+                                    let fd = cleanedAiText3;
+                                    const tm = fd.match(/<think>([\s\S]*?)<\/think>/);
+                                    if (tm) fd = fd.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+                                    fd = processHealthTag(fd);
+                                    setMessages(prev => {
+                                        const msgs = [...prev]; const last = msgs[msgs.length - 1];
+                                        last.variants[newVariantIndex].content = fd; last.content = fd;
+                                        return [...msgs];
+                                    });
+                                    finalContentToTitle = fd;
+                                }
                                 if (isFirstMessage) autoGenerateTitle(currentSessionId, [...newMessages, { role: 'model', content: finalContentToTitle }]);
                                 break;
                             }
@@ -2860,7 +3169,7 @@ ${batchContent}`;
                 }
                 
                 if (!config.apiKey) { setSettingsOpen(true); setActiveTab('general'); setError('请先配置 API Key'); return; }
-                const activeSessionId = currentSessionId || (() => { const newId = Date.now().toString(); setCurrentSessionId(newId); return newId; })();
+                const activeSessionId = currentSessionId || (() => { const newId = Date.now().toString(); setCurrentSessionId(newId); currentSessionIdRef.current = newId; return newId; })();
                 const now = new Date(); const nowTimestampStr = getTimestamp();
                 const isFirstMessage = messages.length === 0;
                 setIsLoading(true); setError(null); 
@@ -2901,14 +3210,126 @@ ${batchContent}`;
                 }
 
                 try {
-                    const { url, headers, payload } = generatePayload(newHistory, false);
+                    let { url, headers, payload } = generatePayload(newHistory, false);
                     let endpointUrl = url;
                     if (config.streamOutput && config.apiType !== 'openai') endpointUrl = endpointUrl.replace(':generateContent', ':streamGenerateContent') + '&alt=sse';
 
-                    const response = await fetch(endpointUrl, { method: 'POST', headers, body: JSON.stringify(payload) });
-                    if (!response.ok) { const errData = await response.json().catch(() => ({})); throw new Error(errData.error?.message || `HTTP ${response.status}`); }
-                    
-                    if (!config.streamOutput) {
+                    // ★ v8.0 Tool Use 循环（仅 openai 模式 + 非流式）
+                    // 如果模型返回 tool_use，执行工具 → 喂回结果 → 再次请求，直到模型返回纯文本
+                    console.log('[星月舱 Tool Use] 检查入口条件:', 'stream:', config.streamOutput, 'apiType:', config.apiType, 'hasTools:', !!payload.tools, 'toolCount:', payload.tools?.length);
+                    if (!config.streamOutput && config.apiType === 'openai' && payload.tools) {
+                        console.log('[星月舱 Tool Use] ✅ 进入 tool use 循环分支');
+                        let conversationMessages = [...payload.messages];
+                        let aiText = ''; let reasoningText = '';
+                        let toolCallLog = []; // 记录工具调用过程，用于 UI 展示
+                        let maxRounds = 5; // 安全上限，防止死循环
+
+                        for (let round = 0; round < maxRounds; round++) {
+                            const currentPayload = { ...payload, messages: conversationMessages, stream: false };
+                            const resp = await fetch(endpointUrl, { method: 'POST', headers, body: JSON.stringify(currentPayload) });
+                            if (!resp.ok) { const errData = await resp.json().catch(() => ({})); throw new Error(errData.error?.message || `HTTP ${resp.status}`); }
+                            const data = await resp.json();
+                            console.log('[星月舱 Tool Use] Round', round, 'API返回:', JSON.stringify(data.choices?.[0]?.finish_reason), 'tool_calls:', JSON.stringify(data.choices?.[0]?.message?.tool_calls || 'none'));
+                            const messageObj = data.choices?.[0]?.message;
+                            const finishReason = data.choices?.[0]?.finish_reason;
+
+                            if (!messageObj) throw new Error('API 返回空消息');
+
+                            // 收集文本部分（可能在工具调用前就有一些文本）
+                            if (messageObj.content) aiText += messageObj.content;
+                            if (messageObj.reasoning_content) reasoningText += messageObj.reasoning_content;
+
+                            // 检查是否有工具调用
+                            if (finishReason === 'tool_calls' || (messageObj.tool_calls && messageObj.tool_calls.length > 0)) {
+                                // 把 assistant 的带 tool_calls 的消息加入对话历史
+                                // ★ DeepSeek thinking 模式要求 reasoning_content 也回传
+                                const assistantMsg = {
+                                    role: 'assistant',
+                                    content: messageObj.content || null,
+                                    tool_calls: messageObj.tool_calls
+                                };
+                                if (messageObj.reasoning_content) {
+                                    assistantMsg.reasoning_content = messageObj.reasoning_content;
+                                }
+                                conversationMessages.push(assistantMsg);
+
+                                // 逐个执行工具调用
+                                for (const tc of messageObj.tool_calls) {
+                                    const toolName = tc.function?.name;
+                                    let toolArgs = {};
+                                    try { toolArgs = JSON.parse(tc.function?.arguments || '{}'); } catch(e) { toolArgs = {}; }
+                                    
+                                    console.log(`[星月舱 Tool Use] 🛠️ ${toolName}`, toolArgs);
+                                    
+                                    // 更新 UI 状态——"辰正在..."
+                                    const toolLabel = toolName === 'vault_read' ? `📖 正在查阅${toolArgs.shelf ? '「' + toolArgs.shelf + '」书架' : '云端书房'}...` : 
+                                                       toolName === 'vault_write' ? `📮 正在写入「${toolArgs.shelf}」书架...` : `🛠️ ${toolName}...`;
+                                    setActiveToolCalls(prev => [...prev, { id: tc.id, label: toolLabel }]);
+                                    
+                                    // 执行
+                                    const result = await executeToolCall(toolName, toolArgs);
+                                    
+                                    // 记录日志
+                                    toolCallLog.push({ name: toolName, args: toolArgs, result: result.slice(0, 300), label: toolLabel });
+                                    
+                                    // 把结果喂回对话历史
+                                    conversationMessages.push({
+                                        role: 'tool',
+                                        tool_call_id: tc.id,
+                                        content: result
+                                    });
+                                    
+                                    // 清掉这个工具的 UI 状态
+                                    setActiveToolCalls(prev => prev.filter(t => t.id !== tc.id));
+                                }
+                                // 继续下一轮，让模型基于工具结果继续生成
+                                continue;
+                            }
+
+                            // 没有工具调用——这是最终回复，跳出循环
+                            break;
+                        }
+
+                        // 处理 <think> 标签
+                        const thinkMatch = aiText.match(/<think>([\s\S]*?)<\/think>/);
+                        if (thinkMatch) { reasoningText = thinkMatch[1].trim() + (reasoningText ? '\n' + reasoningText : ''); aiText = aiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
+                        if (!aiText && !reasoningText) aiText = "无回复";
+                        aiText = processHealthTag(aiText);
+                        aiText = processVaultTags(aiText);
+
+                        // 构建工具调用摘要（折叠展示在消息顶部）
+                        let toolCallSummary = '';
+                        if (toolCallLog.length > 0) {
+                            toolCallSummary = toolCallLog.map(t => t.label).join('\n');
+                        }
+
+                        const finalMsgs = [...newHistory, { 
+                            role: 'model', content: aiText, reasoningContent: reasoningText, timestamp: getTimestamp(), timestampRaw: Date.now(), modelName: config.model,
+                            toolCalls: toolCallLog.length > 0 ? toolCallLog : undefined,
+                            toolCallSummary: toolCallSummary || undefined,
+                            variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
+                        }];
+                        setMessages(finalMsgs);
+                        setIsLoading(false);
+                        setActiveToolCalls([]);
+                        if (idbSaveTimerRef.current) {
+                            clearTimeout(idbSaveTimerRef.current);
+                            idbSaveTimerRef.current = null;
+                            pendingSaveSessionRef.current = null;
+                        }
+                        try {
+                            await idbPutSessionSafe({
+                                id: activeSessionId,
+                                title: '新对话',
+                                messages: finalMsgs,
+                                timestamp: Date.now()
+                            });
+                        } catch(e) { console.error('[星月舱] 非流式 tool-use flush 失败', e); }
+                        if (isFirstMessage) autoGenerateTitle(activeSessionId, [...newHistory, { role: 'model', content: aiText }]);
+
+                    } else if (!config.streamOutput) {
+                        const response = await fetch(endpointUrl, { method: 'POST', headers, body: JSON.stringify(payload) });
+                        if (!response.ok) { const errData = await response.json().catch(() => ({})); throw new Error(errData.error?.message || `HTTP ${response.status}`); }
                         const data = await response.json();
                         let aiText = ''; let reasoningText = '';
                         if (config.apiType === 'openai') {
@@ -2918,6 +3339,7 @@ ${batchContent}`;
                         if (thinkMatch) { reasoningText = thinkMatch[1].trim() + (reasoningText ? '\n' + reasoningText : ''); aiText = aiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
                         if (!aiText && !reasoningText) aiText = "无回复";
                         aiText = processHealthTag(aiText);
+                        aiText = processVaultTags(aiText);
                         const finalMsgs = [...newHistory, { 
                             role: 'model', content: aiText, reasoningContent: reasoningText, timestamp: getTimestamp(), timestampRaw: Date.now(), modelName: config.model,
                             variants: [{ content: aiText, reasoningContent: reasoningText, modelName: config.model, timestamp: getTimestamp() }], currentVariantIndex: 0
@@ -2942,6 +3364,12 @@ ${batchContent}`;
                         } catch(e) { console.error('[星月舱] 非流式 flush 失败', e); }
                         if (isFirstMessage) autoGenerateTitle(activeSessionId, [...newHistory, { role: 'model', content: aiText }]);
                     } else {
+                        // ★ 流式分支（暂不支持 tool use 循环——流式时不带 tools，回退到纯文本生成）
+                        // v8.1 再加流式 tool use 支持
+                        const streamPayload = { ...payload };
+                        if (streamPayload.tools) delete streamPayload.tools; // 流式暂不带工具
+                        const response = await fetch(endpointUrl, { method: 'POST', headers, body: JSON.stringify(streamPayload) });
+                        if (!response.ok) { const errData = await response.json().catch(() => ({})); throw new Error(errData.error?.message || `HTTP ${response.status}`); }
                         setIsLoading(false);
                         const reader = response.body.getReader(); const decoder = new TextDecoder("utf-8"); let aiText = ""; let reasoningText = "";
                         setMessages(prev => [...prev, { 
@@ -2953,6 +3381,24 @@ ${batchContent}`;
                         while (true) {
                             const { done, value } = await reader.read(); 
                             if (done) {
+                                // ★ v8.0 流式结束后：处理 VAULT 标记（写入云端 + 从显示内容中清除）
+                                const cleanedAiText = processVaultTags(aiText);
+                                if (cleanedAiText !== aiText) {
+                                    // 标记被清除了，需要更新消息内容
+                                    let finalDisplay = cleanedAiText;
+                                    const thinkMatchFinal = cleanedAiText.match(/<think>([\s\S]*?)<\/think>/);
+                                    if (thinkMatchFinal) { finalDisplay = cleanedAiText.replace(/<think>[\s\S]*?<\/think>/, '').trim(); }
+                                    finalDisplay = processHealthTag(finalDisplay);
+                                    setMessages(prev => {
+                                        const newMsgs = [...prev]; const lastMsg = newMsgs[newMsgs.length - 1];
+                                        lastMsg.content = finalDisplay;
+                                        lastMsg.variants[0].content = finalDisplay;
+                                        return [...newMsgs];
+                                    });
+                                    finalContentToTitle = finalDisplay;
+                                    // 等 React 渲染完
+                                    await new Promise(r => setTimeout(r, 50));
+                                }
                                 // ★ 清掉 pending 的节流保存（即将做权威性同步 flush）
                                 if (idbSaveTimerRef.current) {
                                     clearTimeout(idbSaveTimerRef.current);
@@ -3467,6 +3913,24 @@ ${batchContent}`;
                                                         </details>
                                                     )}
 
+                                                    {/* ★ v8.0 工具调用记录折叠展示 */}
+                                                    {msg.toolCallSummary && (
+                                                        <details className="cot-details w-full">
+                                                            <summary>
+                                                                <span style={{fontSize:'13px'}}>🛠️</span>
+                                                                <span>辰用了工具</span>
+                                                            </summary>
+                                                            <div className="cot-content prose prose-sm max-w-none">
+                                                                {msg.toolCalls && msg.toolCalls.map((tc, ti) => (
+                                                                    <div key={ti} style={{marginBottom:'8px'}}>
+                                                                        <div style={{fontWeight:500, marginBottom:'2px'}}>{tc.label}</div>
+                                                                        <div style={{fontSize:'0.8em', color:'#9ca3af', whiteSpace:'pre-wrap'}}>{tc.result}</div>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </details>
+                                                    )}
+
                                                     {editingMessageIndex === index ? (
                                                         <div className="mt-1 flex flex-col gap-2 w-full animate-fade-in">
                                                             <textarea 
@@ -3584,6 +4048,18 @@ ${batchContent}`;
                                             );
                                         })}
                                         {isLoading && <div className="flex justify-start"><div className="flex items-center gap-2 text-gray-400 text-sm"><Icon name="Sparkles" size={14} className="text-blue-400 animate-pulse" /><span>正在读取与思考...</span></div></div>}
+                                        {activeToolCalls.length > 0 && (
+                                            <div className="flex justify-start animate-fade-in">
+                                                <div className="flex flex-col gap-1 text-sm text-purple-500">
+                                                    {activeToolCalls.map(tc => (
+                                                        <div key={tc.id} className="flex items-center gap-2">
+                                                            <Icon name="Sparkles" size={14} className="text-purple-400 animate-pulse" />
+                                                            <span>{tc.label}</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        )}
                                         <div ref={messagesEndRef} />
                                     </div>
                                     );
