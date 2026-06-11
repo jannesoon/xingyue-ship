@@ -84,10 +84,39 @@
         })();
 
         // 注册 Service Worker 实现离线缓存（第二次启动起秒开）
+        // ★ v8.0-alpha+patch-20260524：增强升级检测，避免缓存卡住
         if ('serviceWorker' in navigator) {
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('sw.js').then(reg => {
                     console.log('[星月舱] Service Worker 注册成功', reg.scope);
+
+                    // 1. 启动时主动检查更新（绕过 iOS Safari 的懒检测周期）
+                    reg.update().catch(() => {});
+
+                    // 2. 每 30 分钟再检查一次（如果柒柒一直开着页面没刷新）
+                    setInterval(() => {
+                        reg.update().catch(() => {});
+                    }, 30 * 60 * 1000);
+
+                    // 3. 检测到新 SW 安装完成 → 自动 reload 让新版生效
+                    reg.addEventListener('updatefound', () => {
+                        const newWorker = reg.installing;
+                        if (!newWorker) return;
+                        newWorker.addEventListener('statechange', () => {
+                            // installed 状态意味着新 SW 已下载完成、随时可接管
+                            if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                                console.log('[星月舱] 发现新版本，3 秒后自动刷新加载新版');
+                                // 给柒柒一个温和提示
+                                if (typeof document !== 'undefined') {
+                                    const toast = document.createElement('div');
+                                    toast.textContent = '✨ 检测到星月舱新版本，即将刷新…';
+                                    toast.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:#8b5cf6;color:#fff;padding:10px 20px;border-radius:20px;font-size:14px;z-index:99999;box-shadow:0 4px 20px rgba(139,92,246,0.4);';
+                                    document.body.appendChild(toast);
+                                }
+                                setTimeout(() => window.location.reload(), 3000);
+                            }
+                        });
+                    });
                 }).catch(e => {
                     console.warn('[星月舱] Service Worker 注册失败', e);
                 });

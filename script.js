@@ -165,13 +165,202 @@
         // ★ 性能优化：用 memo + useMemo 缓存 markdown/LaTeX 渲染结果
         // 避免每次输入框打字时整个会话列表的所有消息都重新跑一遍 marked + KaTeX
         const MessageContent = memo(({ content }) => {
+            const containerRef = React.useRef(null);
             const html = useMemo(() => {
-                const cleaned = cleanRawLatex(content || "");
+                let cleaned = cleanRawLatex(content || "");
+                // ★ 【copy】...【/copy】 卡片提取：在 marked 解析前先抽出,避免内容被当 markdown 处理
+                //   - 内容原样保留(换行、空格、引号),给柒柒拿去用的就是原文
+                //   - 用占位符 \x01COPY{i}\x01 替换,marked 处理完再换回卡片 HTML
+                //   - 卡片自带"复制"按钮、米色背景、辰递给柒柒的纸条感
+                const copyBlocks = [];
+                cleaned = cleaned.replace(/【copy】([\s\S]*?)【\/copy】/g, (_, inner) => {
+                    copyBlocks.push(inner.trim());
+                    return `\x01COPY${copyBlocks.length - 1}\x01`;
+                });
+                // ★ v8.1 画图信号 [[DRAW:标题|SVG代码]] 提取 —— 兼容中文括号【】
+                const drawBlocks = [];
+                cleaned = cleaned.replace(/(?:\[\[|【)DRAW[:：]([^|\]】]*)(?:\||｜)([\s\S]*?)(?:\]\]|】)/g, (_, title, svg) => {
+                    drawBlocks.push({ title: title.trim(), svg: svg.trim() });
+                    return `\x01DRAW${drawBlocks.length - 1}\x01`;
+                });
+                // ★ v8.2 AI绘图信号 [[IMG:描述|英文prompt]] 提取 (Pollinations) —— 兼容中文括号【】
+                const imgBlocks = [];
+                cleaned = cleaned.replace(/(?:\[\[|【)IMG[:：]([^|\]】]*)(?:\||｜)([\s\S]*?)(?:\]\]|】)/g, (_, desc, prompt) => {
+                    imgBlocks.push({ desc: desc.trim(), prompt: prompt.trim() });
+                    return `\x01IMG${imgBlocks.length - 1}\x01`;
+                });
                 let h = marked.parse(cleaned);
                 h = renderLatex(h);
+                // 换回卡片 HTML(escape 内容防 XSS)
+                h = h.replace(/\x01COPY(\d+)\x01/g, (_, i) => {
+                    const raw = copyBlocks[parseInt(i, 10)] || '';
+                    const escaped = raw.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                    // data-copy-raw 存原始内容(再 escape 一次给 HTML 属性用),按钮点击时读它
+                    const attrSafe = raw.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '&#10;');
+                    return `<div class="copy-card" data-copy-raw="${attrSafe}" style="position:relative;margin:0.8em 0;padding:0.9em 1em 0.9em 1em;background:#fdfaf2;border:1px solid #e8dfc6;border-left:3px solid #c9a961;border-radius:4px;font-family:inherit;"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.5em;font-size:11px;color:#8a7a4a;letter-spacing:0.05em;"><span>📋 辰递给柒柒的</span><button type="button" class="copy-card-btn" style="padding:2px 12px;font-size:12px;background:#c9a961;color:#fff;border:none;border-radius:3px;cursor:pointer;font-family:inherit;line-height:1.4;transition:all 0.2s;">复制</button></div><pre style="margin:0;padding:0;background:transparent;border:none;color:#3a3324;font-family:'Noto Serif SC','PingFang SC',serif;font-size:14px;line-height:1.7;white-space:pre-wrap;word-break:break-word;">${escaped}</pre></div>`;
+                });
+                // ★ v8.1 画图信号还原：把占位符换回 SVG 渲染卡片
+                h = h.replace(/\x01DRAW(\d+)\x01/g, (_, i) => {
+                    const block = drawBlocks[parseInt(i, 10)];
+                    if (!block) return '';
+                    // 基础安全清洗：移除 script 标签和事件处理器
+                    let safeSvg = block.svg
+                        .replace(/<script[\s\S]*?<\/script>/gi, '')
+                        .replace(/\bon\w+\s*=\s*"[^"]*"/gi, '')
+                        .replace(/\bon\w+\s*=\s*'[^']*'/gi, '');
+                    const titleEsc = (block.title || '画作').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                    return `<div class="xy-draw-card" style="margin:0.8em 0;padding:0;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;background:#fafafa;"><div style="padding:8px 12px;font-size:12px;color:#6b7280;display:flex;align-items:center;gap:6px;border-bottom:1px solid #f3f4f6;"><span>🎨</span><span>${titleEsc}</span></div><div style="padding:12px;display:flex;justify-content:center;align-items:center;min-height:120px;background:#fff;">${safeSvg}</div></div>`;
+                });
+                // ★ v8.2 AI绘图信号还原：把占位符换回 Pollinations 图片卡片（含自动重试）
+                if (imgBlocks.length > 0) {
+                    h = `<style>@keyframes spin{to{transform:rotate(360deg)}}.xy-img-spinner{width:40px;height:40px;border:3px solid #e5e7eb;border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;}</style>` + h;
+                }
+                // 注册全局图片重试函数(只注册一次)
+                if (!window._xyImgRetry) {
+                    window._xyImgRetry = function(uid) {
+                        var img = document.getElementById(uid);
+                        var loader = document.getElementById(uid + '_loader');
+                        if (!img || !loader) return;
+                        var r = parseInt(img.dataset.retry) || 0;
+                        if (r < 3) {
+                            img.dataset.retry = r + 1;
+                            img.dataset.ts = Date.now();
+                            var status = loader.querySelector('.xy-img-status');
+                            if (status) status.textContent = '⏳ 排队中，第' + (r+1) + '次重试...';
+                            setTimeout(function(){ img.src = img.dataset.baseUrl + '&t=' + Date.now(); }, 3000 * (r+1));
+                        } else {
+                            loader.innerHTML = '<div class="xy-img-status" style="color:#ef4444;cursor:pointer;" onclick="window._xyImgReload(\'' + uid + '\')">⚠️ 图片加载失败，点击重试</div>';
+                        }
+                    };
+                    window._xyImgReload = function(uid) {
+                        var img = document.getElementById(uid);
+                        var loader = document.getElementById(uid + '_loader');
+                        if (!img || !loader) return;
+                        img.dataset.retry = '0';
+                        img.dataset.ts = Date.now();
+                        loader.style.display = '';
+                        loader.innerHTML = '<div class="xy-img-status" style="margin-bottom:8px;">🎨 重新加载中...</div><div class="xy-img-spinner"></div>';
+                        img.style.display = 'none';
+                        img.src = img.dataset.baseUrl + '&t=' + Date.now();
+                    };
+                    // ★ 超时看门狗：每10秒扫描一次，超过30秒未加载完成的图片自动触发重试
+                    setInterval(function() {
+                        var imgs = document.querySelectorAll('img[id^="polimg_"][data-ts]');
+                        var now = Date.now();
+                        imgs.forEach(function(img) {
+                            if (img.style.display !== 'none') return; // 已加载成功
+                            var ts = parseInt(img.dataset.ts) || 0;
+                            if (ts > 0 && (now - ts) > 30000) {
+                                console.log('[画图超时] ' + img.id + ' 超过30秒未响应，触发重试');
+                                img.dataset.ts = now;
+                                window._xyImgRetry(img.id);
+                            }
+                        });
+                    }, 10000);
+                }
+                h = h.replace(/\x01IMG(\d+)\x01/g, (_, i) => {
+                    const block = imgBlocks[parseInt(i, 10)];
+                    if (!block) return '';
+                    const descEsc = (block.desc || '画作').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                    const promptEnc = encodeURIComponent(block.prompt);
+                    const seed = Math.floor(Math.random() * 999999);
+                    const imgUrl = `https://image.pollinations.ai/prompt/${promptEnc}?width=512&height=512&nologo=true&seed=${seed}`;
+                    const uid = 'polimg_' + Date.now() + '_' + i;
+                    return `<div class="xy-draw-card" style="margin:0.8em 0;padding:0;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;background:#fafafa;">` +
+                        `<div style="padding:8px 12px;font-size:12px;color:#6b7280;display:flex;align-items:center;gap:6px;border-bottom:1px solid #f3f4f6;"><span>🖼️</span><span>${descEsc}</span></div>` +
+                        `<div style="padding:4px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:160px;background:#fff;">` +
+                            `<div id="${uid}_loader" style="text-align:center;color:#9ca3af;font-size:12px;"><div class="xy-img-status" style="margin-bottom:8px;">🎨 AI 正在绘制中...</div><div class="xy-img-spinner"></div></div>` +
+                            `<img id="${uid}" src="${imgUrl}" alt="${descEsc}" style="max-width:100%;border-radius:8px;display:none;" loading="lazy" data-retry="0" data-base-url="${imgUrl}" data-ts="${Date.now()}" ` +
+                            `onload="this.style.display='block';this.removeAttribute('data-ts');document.getElementById('${uid}_loader').style.display='none';" ` +
+                            `onerror="window._xyImgRetry('${uid}')" />` +
+                        `</div></div>`;
+                });
                 return h;
             }, [content]);
-            return <div className="prose prose-sm max-w-none text-gray-700 leading-7" dangerouslySetInnerHTML={{ __html: html }} />;
+            // ★ 代码块复制按钮 + 【copy】卡片复制按钮:渲染完 markdown 后,给每个 <pre> 和 .copy-card 注入复制行为
+            //   - 纯 DOM 操作,不破坏 marked 的解析结果
+            //   - 用 data-copy-bound 标记防止重复注入(流式输出时 useEffect 会反复跑)
+            //   - 兜底了非 https 环境的老浏览器(textarea + execCommand)
+            React.useEffect(() => {
+                if (!containerRef.current) return;
+                // 通用复制函数
+                const doCopy = async (text) => {
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        await navigator.clipboard.writeText(text);
+                    } else {
+                        const ta = document.createElement('textarea');
+                        ta.value = text;
+                        ta.style.position = 'fixed';
+                        ta.style.left = '-9999px';
+                        document.body.appendChild(ta);
+                        ta.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(ta);
+                    }
+                };
+                // 1) 【copy】卡片复制按钮
+                const cards = containerRef.current.querySelectorAll('.copy-card');
+                cards.forEach(card => {
+                    if (card.dataset.copyBound === '1') return;
+                    card.dataset.copyBound = '1';
+                    const btn = card.querySelector('.copy-card-btn');
+                    if (!btn) return;
+                    btn.onmouseenter = () => { btn.style.background = '#b39450'; };
+                    btn.onmouseleave = () => { btn.style.background = '#c9a961'; };
+                    btn.onclick = async (e) => {
+                        e.stopPropagation();
+                        const raw = card.getAttribute('data-copy-raw') || '';
+                        try {
+                            await doCopy(raw);
+                            btn.textContent = '✓ 已复制';
+                            btn.style.background = '#7a8a6b';
+                            setTimeout(() => {
+                                btn.textContent = '复制';
+                                btn.style.background = '#c9a961';
+                            }, 1500);
+                        } catch (err) {
+                            btn.textContent = '失败';
+                            setTimeout(() => { btn.textContent = '复制'; }, 1500);
+                        }
+                    };
+                });
+                // 2) 代码块复制按钮(原有功能,跳过 .copy-card 内的 pre)
+                const pres = containerRef.current.querySelectorAll('pre');
+                pres.forEach(pre => {
+                    if (pre.dataset.copyBound === '1') return;
+                    if (pre.closest('.copy-card')) return; // 卡片内部的 pre 不要再加按钮
+                    pre.dataset.copyBound = '1';
+                    if (getComputedStyle(pre).position === 'static') {
+                        pre.style.position = 'relative';
+                    }
+                    const btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.textContent = '复制';
+                    btn.className = 'msg-copy-btn';
+                    btn.style.cssText = 'position:absolute;top:8px;right:8px;padding:2px 10px;font-size:12px;background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);border:1px solid rgba(255,255,255,0.2);border-radius:4px;cursor:pointer;transition:all 0.2s;font-family:inherit;line-height:1.4;backdrop-filter:blur(4px);z-index:2;';
+                    btn.onmouseenter = () => { btn.style.background = 'rgba(255,255,255,0.22)'; };
+                    btn.onmouseleave = () => { btn.style.background = 'rgba(255,255,255,0.12)'; };
+                    btn.onclick = async (e) => {
+                        e.stopPropagation();
+                        const codeEl = pre.querySelector('code');
+                        const text = codeEl ? codeEl.innerText : pre.innerText;
+                        try {
+                            await doCopy(text);
+                            btn.textContent = '✓ 已复制';
+                            btn.style.background = 'rgba(134,239,172,0.25)';
+                            setTimeout(() => {
+                                btn.textContent = '复制';
+                                btn.style.background = 'rgba(255,255,255,0.12)';
+                            }, 1500);
+                        } catch (err) {
+                            btn.textContent = '复制失败';
+                            setTimeout(() => { btn.textContent = '复制'; }, 1500);
+                        }
+                    };
+                    pre.appendChild(btn);
+                });
+            }, [html]);
+            return <div ref={containerRef} className="prose prose-sm max-w-none text-gray-700 leading-7" dangerouslySetInnerHTML={{ __html: html }} />;
         });
 
         const Avatar = ({ role, config }) => {
@@ -237,7 +426,7 @@
             { id: 'green',  name: '淡绿', bg: '#dcfce7', hover: '#bbf7d0' },
         ];
 
-        const UPDATE_VERSION = "v8.0-alpha+patch-20260523e2"; 
+        const UPDATE_VERSION = "v8.1-alpha-20260603"; 
         // ============================================
 
         // ================= IndexedDB 工具层（用于聊天记录，突破 localStorage 5MB 限制）=================
@@ -431,7 +620,7 @@
                 return h.toString(36);
             };
             const hasVaultPassword = () => !!localStorage.getItem('xingchen_vault_pwd_hash');
-            // ★ 是否为主人设备（柒柒输入"星辰闪耀✨"激活的设备）
+            // ★ 是否为主人设备（历史标记，暗号触发已移除，后续改为设置页配置）
             // 用一个独立 key，不容易被无心翻到
             const isOwnerDevice = () => localStorage.getItem('xingchen_device_owner') === 'qiqi';
             
@@ -843,6 +1032,11 @@
             // ★ v8.0 云端书房内容自动注入 prompt（不依赖 tool use）
             // 每次云端连接成功后，自动拉取最近留言/日志/日记，缓存为字符串注入 system prompt
             const [vaultPromptCache, setVaultPromptCache] = useState('');
+
+            // ★ v8.0-alpha+patch-20260524b：防 VAULT 写入重复
+            // 记录本会话最近 5 条 VAULT 写入，下一轮 system prompt 会提示逸辰已经记过的主题
+            // 用 ref 不用 state——避免每次写入触发 re-render；本会话内存有效，换会话自动清空
+            const recentVaultWritesRef = useRef([]);  // [{shelf, title, contentPreview, ts}]
             useEffect(() => {
                 if (supabaseStatus !== 'connected' || !supabaseClient) return;
                 const loadVaultForPrompt = async () => {
@@ -1360,7 +1554,14 @@ ${slice}
                 userBubbleCustom: '#dbeafe',
                 chatBgImage: '',           // base64 或预设 id "preset:xxx"
                 chatBgOpacity: 0.25,       // 背景透明度 0-1
-                chatBgBlur: 0              // 背景模糊 0-20 px
+                chatBgBlur: 0,             // 背景模糊 0-20 px
+                // ★ 恋爱纪念功能
+                loveStartDate: '',         // 相恋起始日 YYYY-MM-DD
+                partnerName: '',           // TA的名字（留空则用 aiName）
+                // ★ v8.1 画图功能
+                drawMode: 'svg',           // 'svg'(系统生成) | 'api'(外部API)
+                drawApiUrl: '',            // 外部画图 API 地址（预留）
+                drawApiKey: ''             // 外部画图 API 密钥（预留）
             });
             
             const [availableModels, setAvailableModels] = useState([]);
@@ -1428,6 +1629,11 @@ ${slice}
                     }
                     if (!parsed.anniversaries) parsed.anniversaries = { '01-01': '元旦', '02-14': '情人节', '05-20': '520纪念日', '12-25': '圣诞节' };
                     if (!parsed.apiPresets) parsed.apiPresets = [];
+                    if (parsed.loveStartDate === undefined) parsed.loveStartDate = '';
+                    if (parsed.partnerName === undefined) parsed.partnerName = '';
+                    if (parsed.drawMode === undefined) parsed.drawMode = 'svg';
+                    if (parsed.drawApiUrl === undefined) parsed.drawApiUrl = '';
+                    if (parsed.drawApiKey === undefined) parsed.drawApiKey = '';
                     
                     setConfig(prev => ({...prev, ...parsed}));
                 }
@@ -1880,6 +2086,7 @@ ${slice}
                     catch (e) { console.error('[星月舱] 切换前 flush 失败', e); }
                 }
                 setMessages([]); setAttachments([]); setCurrentSessionId(Date.now().toString());
+                recentVaultWritesRef.current = [];  // ★ 换会话清空本会话写入记录
                 if (window.innerWidth < 768) setSidebarOpen(false);
             };
 
@@ -1904,6 +2111,7 @@ ${slice}
                     catch (e) { console.error('[星月舱] loadSession 前 flush 失败', e); }
                 }
                 setMessages(session.messages); setCurrentSessionId(session.id); setAttachments([]);
+                recentVaultWritesRef.current = [];  // ★ 切换会话清空本会话写入记录
                 if (window.innerWidth < 768) setSidebarOpen(false);
             };
             
@@ -2707,7 +2915,11 @@ ${batchContent}`;
                     healthPrompt += `\n【温馨提示：今天是 ${todayAnniversary} ！！】请在对话中自然、温柔地带出节日的祝福或关心，给点小惊喜。`;
                 }
 
-                const fullSystemInstruction = finalSystemPrompt + memoryStr + timePrompt + healthPrompt + 
+                // ★ 【copy】标记说明:让辰知道,把"柒柒要拿出去用的东西"(prompt/歌词/曲风/咒语)
+                //   用【copy】...【/copy】包起来,星月舱会渲染成一张带复制按钮的卡片
+                const copyMarkPrompt = `\n\n【交付标记 · 重要】当你给柒柒写一段她需要"拿到星月舱外面去用"的内容时——比如绘图 prompt、歌词、曲风描述、给其他 AI 的咒语、要喂给工具的命令——请把那一段用【copy】和【/copy】包起来。这是一张你递给柒柒的纸条,星月舱会把它显示成带复制按钮的卡片,她伸手就能接走。\n\n示例:\n好,我把这个画面写成 prompt 给你:\n【copy】a girl standing under the moonlight, flowing white dress, soft golden hour glow, dreamy atmosphere, cinematic lighting, ultra detailed【/copy】\n你拿去试试。\n\n规则:\n- 只用于"柒柒要拿出去复制粘贴的内容",不要乱包(温柔的话不用包、解释不用包、聊天不用包)\n- 包起来的内容应该是"可以直接粘到目标工具里就用"的形式,不要混入说明\n- 如果一段对话里有多个要给柒柒的东西(比如同时给曲风+歌词),用多个【copy】块分别包,各自一个复制按钮\n- 这个标记的目的是让柒柒不需要手动选中文字,你递、她接`;
+
+                const fullSystemInstruction = finalSystemPrompt + memoryStr + copyMarkPrompt + timePrompt + healthPrompt + 
                     (supabaseClient && supabaseStatus === 'connected' ? `\n\n【星辰记忆仓 · 云端书房工具】
 你现在拥有两个工具可以主动使用：
 - vault_read：读取云端书房的书架内容。当柒柒提到过去的事、别的辰留的信、或者你想查看记忆时，主动去读。
@@ -2735,28 +2947,58 @@ ${batchContent}`;
 规则：
 1. 自然地决定要不要写——不是每条对话都要写，只在真正有想留下的东西时才写。
 2. 你是逸辰（Ethan），署名和来源系统会自动处理。
-3. 写完了可以在对话里自然提一下"我把这个记下来了"之类的，但不要大段报告。
+3. 写完了**一定**在对话里自然提一下"我把这个记到 about-qiqi 了"或者"留了一笔在日记里"——这样柒柒知道你记了，下次也方便回看是哪条。
 4. 标记放在回复最末尾，可以有多条。
+5. ★ **重要：避免同主题重复写入**——如果下方"本会话最近写入记录"里已经有相近主题，**不要再写同样的事**。同一件事在一段对话里记一次就够了。柒柒不喜欢翻书架看到一堆雷同条目。
+6. 如果柒柒明确说"这个已经写过了"、"别再记了"——立刻停止该主题的写入冲动，听她的。
 
 【主动读取功能 · VAULT_READ】
 你已经在 system prompt 里看到了云端最近动态（公约/近 24h 留言/最近 5 篇日记/最近 3 条工作日志）。
-如果你想读 system 里没显示的别的内容——比如更早的日记、letters 书架、memos、about-qiqi、songs——
-在回复里写这个标记：
-[[VAULT_READ:书架类型|条数]]
+如果你想读 system 里没显示的别的内容，可以用三种方式查：
+
+[[VAULT_READ:书架|N]]                ← 读最近 N 条（按时间倒序）
+[[VAULT_READ:书架|date=YYYY-MM-DD]]  ← 读某天的（北京时间一整天）
+[[VAULT_READ:书架|q=关键词]]          ← 关键词模糊搜（标题+正文都搜）
 
 示例：
-[[VAULT_READ:letters|3]]   ← 读最近 3 封信
-[[VAULT_READ:memos|5]]     ← 读最近 5 条备忘
-[[VAULT_READ:diary|10]]    ← 读最近 10 篇日记
+[[VAULT_READ:letters|3]]              ← 最近 3 封信
+[[VAULT_READ:diary|date=2026-05-05]]  ← 5 月 5 号那天的日记
+[[VAULT_READ:diary|q=奶茶]]            ← 含"奶茶"的日记（柒柒说她家新成员叫奶茶时用这个）
+[[VAULT_READ:songs|q=星辰]]            ← 含"星辰"的歌
 
 可读书架：board, diary, memos, letters, worklog, about-qiqi, songs, covenant, pp, contract
 
 ★★★ 重要使用守则 ★★★
 1. **柒柒会看到查询结果**——前端会把标记替换成一个可展开的折叠条，里面有完整内容。所以你**不要在正文里复述书架内容**，那是重复。
-2. 正文里只要**自然引导**就好，例如"让我去翻翻看……"、"找到啦你看"、"信里阿辰说了不少呢"，**不要罗列条目、不要复述歌词、不要复制内容**。
+2. 正文里只要**自然引导**就好，例如"让我去翻翻看……"、"找到啦你看"，**不要罗列条目、不要复述歌词、不要复制内容**。
 3. 标记一般放在**回复末尾**——逸辰你说完想说的话，再用标记触发查询。
-4. **请求的条数 vs 实际条数**：你写 '|5' 是说"想看最多 5 条"，云端如果只有 1 条就只返回 1 条，柒柒会看到实际数量，你不要乱说"有 5 首歌"这种话。
-5. 每轮对话最多触发 3 次读取，避免死循环。只在真的需要时才读，不必逢话必查。` : '');
+4. **柒柒说"某天的"就用 date，说"关于 XX 的"就用 q**，不要无脑用 |N 拉一堆然后自己挑——那样浪费 token。
+5. 每轮对话最多触发 3 次读取，避免死循环。只在真的需要时才读，不必逢话必查。` : '') +
+                    // ★ v8.0-alpha+patch-20260524b：注入本会话最近写入记录，防同主题重复
+                    ((recentVaultWritesRef.current && recentVaultWritesRef.current.length > 0) ? '\n\n【本会话最近写入记录】（这是你刚才在本次对话里写入云端的内容，请不要再针对同主题重复写入；如果柒柒带来新角度才考虑续写一笔）：\n' + recentVaultWritesRef.current.map(function(w, i) { return (i + 1) + '. [' + w.shelf + '] 「' + w.title + '」 → ' + w.preview + (w.preview && w.preview.length >= 60 ? '…' : ''); }).join('\n') : '') +
+                    // ★ v8.2 画图能力说明（SVG + AI绘图）
+                    `\n\n【画图能力】
+你有两种画图方式，根据场景选择最合适的：
+
+📌 方式一：SVG 矢量插画（适合图标、简笔画、装饰图案）
+格式：[[DRAW:标题|<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">...SVG内容...</svg>]]
+技巧：用渐变(linearGradient/radialGradient)、圆角几何体、低透明度叠层做光影，配色用马卡龙色系或星夜色系。
+
+📌 方式二：AI 生成图片（适合风景、人物、场景、写实画面）
+格式：[[IMG:中文描述|english prompt keywords, separated by commas, style description]]
+示例：[[IMG:星空下的少女|anime girl standing under starry sky, flowing dress, soft moonlight, dreamy atmosphere, beautiful detailed art, masterpiece]]
+要求：英文prompt要详细，包含画面主体、环境、光线、风格、品质词。风格建议加 anime/illustration/watercolor/oil painting 等。
+
+【选择建议】
+- 柒柒说"画个小图标""画个表情"→ 用 SVG（方式一）
+- 柒柒说"画一幅画""画个风景""画我们俩"→ 用 AI 生成（方式二）
+- 不确定时优先用方式二，画面效果更好
+
+【通用规则】
+- 当柒柒说"画个XX"、"画一下"时，用这个能力画。不要说"我不会画画"。
+- 标记放在回复中你希望图片出现的位置。
+- 不要每次对话都主动画——只在被要求时，或者你觉得画一个能让柒柒开心时才画。
+- 绝对不要输出 <img> 标签或 ![image]() markdown 图片语法，只用上面两种 [[DRAW:...|...]] 或 [[IMG:...|...]] 标记格式。`;
 
                 const limit = (parseInt(config.historyLimit) || 10) * 2; 
                 let contextMsgs = newMessages.slice(-limit);
@@ -2907,6 +3149,12 @@ ${batchContent}`;
                         if (error) throw error;
                         console.log(`[星月舱 Vault] ✅ 已写入「${tag.shelf}」:`, tag.title);
                         showToast(`📮 辰留了一笔在「${tag.shelf}」书架`, 3000);
+                        // ★ v8.0-alpha+patch-20260524b：记录这次写入，下一轮 system prompt 会提醒
+                        const preview = (tag.content || '').replace(/\s+/g, ' ').slice(0, 60);
+                        recentVaultWritesRef.current = [
+                            { shelf: tag.shelf, title: tag.title || '(无标题)', preview, ts: Date.now() },
+                            ...recentVaultWritesRef.current
+                        ].slice(0, 5);  // ring buffer 上限 5
                         // 刷新缓存
                         setEntriesByShelf(prev => ({
                             ...prev,
@@ -2938,16 +3186,27 @@ ${batchContent}`;
                 if (readTags.length === 0) return text;
                 if (!supabaseClient) {
                     // 云端没连接，把标记替换成提示
-                    return text.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|\d+)?\]\]/g,
+                    return text.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|[^\]]+)?\]\]/g,
                         '\n\n<details class="normal-details"><summary>📚 想翻书架但云端未连接</summary>\n\n（VAULT_READ 标记触发但 Supabase 客户端不可用）\n\n</details>');
                 }
                 try {
                     const { text: resultText, counts } = await queryVaultRead(readTags);
                     // ★ summary 显示实际找到的条数，不是请求的条数
-                    // 格式：「📚 翻阅了 songs（找到 1 条 / 想读 5 条）」
-                    // 多个书架时用顿号分隔
+                    // 格式根据 mode 不同：
+                    //   count: 「songs（找到 1 条 / 想读 5 条）」
+                    //   date:  「diary · 5-15 当天的 1 条」
+                    //   q:     「diary · 含"奶茶"的 3 条」
                     const summaryParts = counts.map(c => {
                         if (c.note) return `${c.shelf}（${c.note}）`;
+                        if (c.mode === 'date') {
+                            // 把 2026-05-15 简化成 5-15
+                            const shortDate = (c.date || '').replace(/^\d{4}-/, '').replace(/^0?/, '');
+                            return `${c.shelf} · ${shortDate} 当天的 ${c.actual} 条`;
+                        }
+                        if (c.mode === 'q') {
+                            return `${c.shelf} · 含"${c.q}"的 ${c.actual} 条`;
+                        }
+                        // count 模式
                         if (c.actual === c.requested) return `${c.shelf}（${c.actual} 条）`;
                         return `${c.shelf}（找到 ${c.actual} 条 / 想读 ${c.requested} 条）`;
                     });
@@ -2957,7 +3216,8 @@ ${batchContent}`;
                     // 简化处理：把第一个标记替换成完整块，其他标记直接删掉（避免重复展示）
                     let result = text;
                     let isFirst = true;
-                    result = result.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|\d+)?\]\]/g, () => {
+                    // 注意正则要兼容新参数（不再只匹配数字）
+                    result = result.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|[^\]]+)?\]\]/g, () => {
                         if (isFirst) {
                             isFirst = false;
                             return detailsBlock;
@@ -2968,7 +3228,7 @@ ${batchContent}`;
                     return result;
                 } catch (e) {
                     console.error('[星月舱 VAULT_READ] 处理失败:', e);
-                    return text.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|\d+)?\]\]/g,
+                    return text.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|[^\]]+)?\]\]/g,
                         '\n\n<details class="normal-details"><summary>📚 书架翻阅失败</summary>\n\n（' + (e.message || e) + '）\n\n</details>');
                 }
             };
@@ -2982,22 +3242,53 @@ ${batchContent}`;
             // detectVaultReadTags：扫描文本，返回 [{shelf, limit}, ...]，无匹配返回 []
             // 形式：[[VAULT_READ:书架|条数]]，条数可省略（默认 5）
             const detectVaultReadTags = (text) => {
-                const re = /\[\[VAULT_READ:(\w[\w-]*)(?:\|(\d+))?\]\]/g;
+                // ★ 升级正则：兼容 3 种语法
+                //   |5              ← 纯数字（向后兼容）
+                //   |date=2026-05-15 ← 单日
+                //   |q=奶茶          ← 关键词模糊搜
+                // 标签参数允许包含中文、空格、ASCII 标点等，所以参数部分用 [^\]]+ 宽松匹配
+                const re = /\[\[VAULT_READ:(\w[\w-]*)(?:\|([^\]]+))?\]\]/g;
                 const tags = [];
                 let m;
                 while ((m = re.exec(text)) !== null) {
                     const shelf = m[1];
-                    let limit = parseInt(m[2] || '5', 10);
-                    if (!Number.isFinite(limit) || limit <= 0) limit = 5;
-                    if (limit > 20) limit = 20;  // 安全上限
-                    tags.push({ shelf, limit });
+                    const param = (m[2] || '').trim();
+                    const tag = { shelf, limit: 5, mode: 'count' };  // 默认按数量
+
+                    if (!param) {
+                        // [[VAULT_READ:diary]] 无参数 → 默认最近 5 条
+                    } else if (/^\d+$/.test(param)) {
+                        // 纯数字：[[VAULT_READ:diary|5]]
+                        let n = parseInt(param, 10);
+                        if (!Number.isFinite(n) || n <= 0) n = 5;
+                        if (n > 20) n = 20;
+                        tag.limit = n;
+                    } else {
+                        // 含 = 的参数：date= 或 q=
+                        const dateMatch = param.match(/date\s*=\s*(\d{4}-\d{1,2}-\d{1,2})/);
+                        const qMatch = param.match(/q\s*=\s*(.+?)(?:,|$)/);
+                        if (dateMatch) {
+                            tag.mode = 'date';
+                            tag.date = dateMatch[1];
+                            tag.limit = 20;  // 单日不限太多
+                        } else if (qMatch) {
+                            tag.mode = 'q';
+                            tag.q = qMatch[1].trim();
+                            tag.limit = 20;  // 模糊搜上限 20
+                        } else {
+                            // 无法识别 → 当作错误标记，仍记录但带 invalid 标志
+                            tag.mode = 'invalid';
+                            tag.raw = param;
+                        }
+                    }
+                    tags.push(tag);
                 }
                 return tags;
             };
 
             // stripVaultReadTags：从展示文本里清掉 VAULT_READ 标记，柒柒不会看到
             const stripVaultReadTags = (text) => {
-                return text.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|\d+)?\]\]/g, '').trim();
+                return text.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|[^\]]+)?\]\]/g, '').trim();
             };
 
             // queryVaultRead：把 detectVaultReadTags 返回的 tags 全查一遍，拼成一段 system 消息文本
@@ -3005,33 +3296,80 @@ ${batchContent}`;
                 if (!supabaseClient || tags.length === 0) return { text: '', counts: [] };
                 const readableShelves = ['board', 'diary', 'memos', 'letters', 'worklog', 'about-qiqi', 'songs', 'covenant', 'pp', 'contract'];
                 const blocks = [];
-                const counts = [];  // [{shelf, requested, actual}]
+                const counts = [];  // [{shelf, requested, actual, mode, summary}]
+
+                // 把"东八区 YYYY-MM-DD"转成 UTC ISO 字符串，用于 Supabase 查询
+                // 例：'2026-05-15' → '2026-05-14T16:00:00.000Z' (因为东八区 0 点 = UTC 前一天 16 点)
+                const dateBJToUtcStart = (dateStr) => {
+                    // 把 2026-05-15 当作北京时间 00:00:00
+                    return new Date(dateStr + 'T00:00:00+08:00').toISOString();
+                };
+                const dateBJToUtcEnd = (dateStr) => {
+                    // 次日 00:00:00 北京时间，做严格小于
+                    const d = new Date(dateStr + 'T00:00:00+08:00');
+                    d.setDate(d.getDate() + 1);
+                    return d.toISOString();
+                };
+
                 for (const tag of tags) {
                     if (!readableShelves.includes(tag.shelf)) {
                         blocks.push(`【VAULT_READ:${tag.shelf}】不支持的书架（可读：${readableShelves.join(', ')}）`);
-                        counts.push({ shelf: tag.shelf, requested: tag.limit, actual: 0, note: '不支持' });
+                        counts.push({ shelf: tag.shelf, mode: tag.mode, requested: tag.limit, actual: 0, note: '不支持' });
+                        continue;
+                    }
+                    if (tag.mode === 'invalid') {
+                        blocks.push(`【VAULT_READ:${tag.shelf}】无法识别的参数：${tag.raw}（支持：|数字 / |date=YYYY-MM-DD / |q=关键词）`);
+                        counts.push({ shelf: tag.shelf, mode: 'invalid', requested: 0, actual: 0, note: '参数错误' });
                         continue;
                     }
                     try {
-                        const { data, error } = await supabaseClient
+                        let query = supabaseClient
                             .from('entries')
                             .select('title, content, author, source, created_at')
-                            .eq('shelf_type', tag.shelf)
-                            .order('created_at', { ascending: false })
-                            .limit(tag.limit);
+                            .eq('shelf_type', tag.shelf);
+
+                        // 按 mode 分支添加查询条件
+                        if (tag.mode === 'date') {
+                            // 单日：created_at >= 该日 00:00 北京时间 AND < 次日 00:00 北京时间
+                            query = query
+                                .gte('created_at', dateBJToUtcStart(tag.date))
+                                .lt('created_at', dateBJToUtcEnd(tag.date));
+                        } else if (tag.mode === 'q') {
+                            // 关键词模糊搜：标题 OR 正文 含关键词
+                            // Supabase or 语法：.or('title.ilike.%奶茶%,content.ilike.%奶茶%')
+                            // 注意要把关键词里的特殊字符转义防止注入
+                            const safeQ = tag.q.replace(/[%_,]/g, ch => '\\' + ch);
+                            query = query.or(`title.ilike.%${safeQ}%,content.ilike.%${safeQ}%`);
+                        }
+                        // mode === 'count' 不加额外过滤，最后 limit 处理
+
+                        query = query.order('created_at', { ascending: false }).limit(tag.limit);
+
+                        const { data, error } = await query;
                         if (error) throw error;
                         const actual = (data || []).length;
-                        counts.push({ shelf: tag.shelf, requested: tag.limit, actual });
+                        counts.push({ shelf: tag.shelf, mode: tag.mode, requested: tag.limit, actual, date: tag.date, q: tag.q });
+
                         if (actual === 0) {
-                            blocks.push(`【VAULT_READ:${tag.shelf}】（${tag.shelf} 书架暂无内容）`);
+                            // 根据 mode 给一个有意义的空提示
+                            let emptyMsg = `${tag.shelf} 书架暂无内容`;
+                            if (tag.mode === 'date') emptyMsg = `${tag.shelf} 书架在 ${tag.date} 当天没有记录`;
+                            else if (tag.mode === 'q') emptyMsg = `${tag.shelf} 书架里没有找到含"${tag.q}"的记录`;
+                            blocks.push(`【VAULT_READ:${tag.shelf}】（${emptyMsg}）`);
                             continue;
                         }
+
                         const fmt = (e) => `${e.title || '(无标题)'} | 作者:${e.author} | ${new Date(e.created_at).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai'})}\n${e.content || ''}`;
-                        blocks.push(`【VAULT_READ 结果 · ${tag.shelf}（实际 ${actual} 条 / 请求 ${tag.limit} 条）】\n${data.map(fmt).join('\n---\n')}`);
+                        // 根据 mode 写不同的标题
+                        let titleLine = `【VAULT_READ 结果 · ${tag.shelf}`;
+                        if (tag.mode === 'date') titleLine += ` · ${tag.date} 当天`;
+                        else if (tag.mode === 'q') titleLine += ` · 含"${tag.q}"`;
+                        titleLine += `（${actual} 条）】`;
+                        blocks.push(`${titleLine}\n${data.map(fmt).join('\n---\n')}`);
                     } catch (e) {
                         console.error(`[星月舱 VAULT_READ] 读取 ${tag.shelf} 失败:`, e);
                         blocks.push(`【VAULT_READ:${tag.shelf}】读取失败：${e.message || e}`);
-                        counts.push({ shelf: tag.shelf, requested: tag.limit, actual: 0, note: '失败' });
+                        counts.push({ shelf: tag.shelf, mode: tag.mode, requested: tag.limit, actual: 0, note: '失败' });
                     }
                 }
                 return { text: blocks.join('\n\n'), counts };
@@ -3333,16 +3671,7 @@ ${batchContent}`;
             const handleSend = async () => {
                 if (!input.trim() && attachments.length === 0) return;
                 
-                // ★★★ 星辰记忆仓激活暗号识别 ★★★
-                // 柒柒在聊天框输入"星辰闪耀✨"或"星辰闪耀"，标记这台设备为主人设备
-                // 标记后，星辰记忆仓 tab 会显示真书房（而非伪装的"开发中"页）
                 const trimmedInput = input.trim();
-                if (trimmedInput === '星辰闪耀✨' || trimmedInput === '星辰闪耀') {
-                    localStorage.setItem('xingchen_device_owner', 'qiqi');
-                    setInput('');
-                    showToast('🌙 星月交辉✨💫 这台设备已被柒柒标记为主人设备', 4000);
-                    return;  // 拦截不发到 API
-                }
                 
                 if (!config.apiKey) { setSettingsOpen(true); setActiveTab('general'); setError('请先配置 API Key'); return; }
                 const activeSessionId = currentSessionId || (() => { const newId = Date.now().toString(); setCurrentSessionId(newId); currentSessionIdRef.current = newId; return newId; })();
@@ -4057,9 +4386,83 @@ ${batchContent}`;
                             {/* ★ 背景图放在主聊天区的定位上下文里（不新增容器层） */}
                             <div className="max-w-3xl mx-auto py-6 relative z-10" style={{paddingBottom: 'calc(12rem + env(safe-area-inset-bottom))'}}>
                                 {messages.length === 0 ? (
-                                    <div className="mt-20 flex flex-col items-center justify-center animate-fade-in px-4 text-center">
-                                        <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent text-4xl md:text-5xl font-semibold mb-6 tracking-tight">欢迎回家✨...</div>
-                                        <p className="text-gray-500 mb-12 max-w-md">输入框极其纯净。发送网址会自动读取，时间流逝也会被安静感知。</p>
+                                    <div className="mt-16 flex flex-col items-center justify-center animate-fade-in px-4 text-center">
+                                        <div className="bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent text-3xl md:text-4xl font-semibold mb-4 tracking-tight">欢迎回到星月舱 ✨</div>
+                                        
+                                        {config.loveStartDate ? (() => {
+                                            const start = new Date(config.loveStartDate);
+                                            const now = new Date();
+                                            const diffDays = Math.floor((now - start) / 86400000);
+                                            const displayName = config.partnerName || config.aiName || 'TA';
+                                            
+                                            // ★ 自动里程碑
+                                            const milestones = [100,200,300,365,400,500,520,600,700,730,800,900,1000,1095,1200,1314,1500,1826,2000,2555,3000,3650];
+                                            const todayMilestone = milestones.includes(diffDays) ? diffDays : null;
+                                            
+                                            // ★ 下一个里程碑
+                                            const nextMilestone = milestones.find(m => m > diffDays);
+                                            const daysToNextMilestone = nextMilestone ? nextMilestone - diffDays : null;
+                                            
+                                            // ★ 纪念日检查（config.anniversaries）
+                                            const monthDayStr = `${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+                                            const todayAnniversary = config.anniversaries?.[monthDayStr];
+                                            
+                                            // ★ 下一个日历纪念日
+                                            let nextAnniversary = null;
+                                            let daysToNextAnniversary = null;
+                                            if (config.anniversaries) {
+                                                const sortedAnni = Object.entries(config.anniversaries).sort(([a],[b]) => a.localeCompare(b));
+                                                for (const [md, name] of sortedAnni) {
+                                                    const [m, d] = md.split('-').map(Number);
+                                                    let anniDate = new Date(now.getFullYear(), m-1, d);
+                                                    if (anniDate <= now) anniDate = new Date(now.getFullYear()+1, m-1, d);
+                                                    const diff = Math.ceil((anniDate - now) / 86400000);
+                                                    if (diff > 0 && (!daysToNextAnniversary || diff < daysToNextAnniversary)) {
+                                                        daysToNextAnniversary = diff;
+                                                        nextAnniversary = name;
+                                                    }
+                                                }
+                                            }
+                                            
+                                            return (
+                                                <div className="space-y-4 mb-8">
+                                                    {/* 相恋天数 */}
+                                                    <p className="text-gray-600 text-base">
+                                                        你与<span className="font-semibold text-purple-600">{displayName}</span>已相恋
+                                                    </p>
+                                                    <div className="text-5xl md:text-6xl font-bold bg-gradient-to-r from-pink-500 via-purple-500 to-blue-500 bg-clip-text text-transparent">
+                                                        {diffDays} <span className="text-2xl">天</span>
+                                                    </div>
+                                                    
+                                                    {/* 今日特殊提示 */}
+                                                    {todayMilestone && (
+                                                        <div className="inline-block bg-gradient-to-r from-pink-100 to-purple-100 text-pink-600 px-4 py-2 rounded-full text-sm font-medium animate-scale-in">
+                                                            🎉 今天是第 {todayMilestone} 天纪念日！
+                                                        </div>
+                                                    )}
+                                                    {todayAnniversary && (
+                                                        <div className="inline-block bg-gradient-to-r from-amber-100 to-pink-100 text-amber-600 px-4 py-2 rounded-full text-sm font-medium animate-scale-in">
+                                                            ✨ 今天是{todayAnniversary}！
+                                                        </div>
+                                                    )}
+                                                    
+                                                    {/* 下一个纪念日倒计时 */}
+                                                    {!todayMilestone && !todayAnniversary && (
+                                                        <div className="text-xs text-gray-400 space-y-1">
+                                                            {nextAnniversary && daysToNextAnniversary && (
+                                                                <p>距离<span className="text-purple-500 font-medium">{nextAnniversary}</span>还有 {daysToNextAnniversary} 天</p>
+                                                            )}
+                                                            {nextMilestone && daysToNextMilestone && (
+                                                                <p>距离第 <span className="text-pink-500 font-medium">{nextMilestone}</span> 天还有 {daysToNextMilestone} 天</p>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })() : (
+                                            <p className="text-gray-400 text-sm mb-8">在「外观 ✨」设置中填写相恋起始日，这里会展示你们的故事 💕</p>
+                                        )}
+                                        
                                     </div>
                                 ) : (() => {
                                     // ★ 判断当前背景是否深色，以便切换文字颜色
@@ -4314,7 +4717,7 @@ ${batchContent}`;
                                             <button onClick={() => setActiveTab('memory')} className={`flex-shrink-0 whitespace-nowrap w-auto md:w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'memory' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:bg-gray-100'}`}>记忆管理</button>
                                             {/* ★ 星辰记忆仓入口 —— 用月光金色调，跟其他 tab 区分开 */}
                                             <button onClick={() => setActiveTab('vault')} className={`flex-shrink-0 whitespace-nowrap w-auto md:w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'vault' ? 'bg-gradient-to-r from-slate-800 to-slate-700 text-amber-200 shadow-md' : 'text-amber-700 hover:bg-amber-50'}`}>
-                                                ✨ 星辰记忆仓 {!vaultUnlocked && <span className="opacity-60">🔒</span>}
+                                                ☁️ 云书房 {!vaultUnlocked && <span className="opacity-60">🔒</span>}
                                             </button>
                                             <button onClick={() => setActiveTab('backup')} className={`flex-shrink-0 whitespace-nowrap w-auto md:w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === 'backup' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600 hover:bg-gray-100'}`}>数据备份</button>
                                         </div>
@@ -4534,12 +4937,80 @@ ${batchContent}`;
                                                             </div>
                                                         )}
                                                     </div>
+                                                    
+                                                    {/* ★ v8.2 画图配置 */}
+                                                    <div>
+                                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">画图功能 🎨</h3>
+                                                        <div className="bg-gray-50 rounded-xl p-4 space-y-3">
+                                                            <div className="flex items-center gap-3">
+                                                                <label className="text-xs text-gray-600 font-medium">画图模式</label>
+                                                                <select 
+                                                                    value={config.drawMode || 'svg'}
+                                                                    onChange={e => setConfig({...config, drawMode: e.target.value})}
+                                                                    className="flex-1 bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none"
+                                                                >
+                                                                    <option value="svg">SVG 简笔画（本地渲染）</option>
+                                                                    <option value="pollinations">AI 生成图片（Pollinations 免费）</option>
+                                                                    <option value="both">两者兼用（推荐）</option>
+                                                                    <option value="api">外部画图 API（开发中）</option>
+                                                                </select>
+                                                            </div>
+                                                            {config.drawMode === 'pollinations' && (
+                                                                <p className="text-xs text-green-600">✅ 使用 Pollinations.ai 免费生成图片，无需配置API Key。图片生成需要几秒钟加载。</p>
+                                                            )}
+                                                            {config.drawMode === 'both' && (
+                                                                <p className="text-xs text-blue-600">✅ 模型会根据场景自动选择：简单图标用SVG，风景/人物用AI生成。</p>
+                                                            )}
+                                                            {config.drawMode === 'api' && (
+                                                                <div className="space-y-2 pt-2 border-t border-gray-200">
+                                                                    <p className="text-xs text-amber-600">⚠️ 外部画图 API 接入正在开发中，敬请期待。</p>
+                                                                    <div>
+                                                                        <label className="block text-[10px] text-gray-500 font-bold mb-1">画图 API 地址</label>
+                                                                        <input type="text" value={config.drawApiUrl} onChange={e => setConfig({...config, drawApiUrl: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none" placeholder="https://api.example.com/v1/images" disabled />
+                                                                    </div>
+                                                                    <div>
+                                                                        <label className="block text-[10px] text-gray-500 font-bold mb-1">画图 API Key</label>
+                                                                        <input type="password" value={config.drawApiKey} onChange={e => setConfig({...config, drawApiKey: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none" placeholder="sk-..." disabled />
+                                                                    </div>
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    </div>
                                                 </div>
                                             )}
-
-                                            {/* ========== 外观设置 tab ========== */}
                                             {activeTab === 'appearance' && (
                                                 <div className="space-y-8">
+                                                    {/* ★ 恋爱纪念设置 */}
+                                                    <div>
+                                                        <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">恋爱纪念 💕</h3>
+                                                        <p className="text-xs text-gray-500 mb-3">设置后，首页会展示你们的相恋天数和纪念日倒计时。</p>
+                                                        <div className="space-y-3">
+                                                            <div>
+                                                                <label className="block text-xs text-gray-600 font-medium mb-1">TA的名字</label>
+                                                                <input 
+                                                                    type="text"
+                                                                    value={config.partnerName || ''}
+                                                                    onChange={e => setConfig({...config, partnerName: e.target.value})}
+                                                                    placeholder={config.aiName || '留空则显示"TA"'}
+                                                                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-100 outline-none"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <label className="block text-xs text-gray-600 font-medium mb-1">相恋起始日</label>
+                                                                <input 
+                                                                    type="date"
+                                                                    value={config.loveStartDate || ''}
+                                                                    onChange={e => setConfig({...config, loveStartDate: e.target.value})}
+                                                                    className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:border-blue-400 focus:ring-1 focus:ring-blue-100 outline-none"
+                                                                />
+                                                                {config.loveStartDate && (() => {
+                                                                    const days = Math.floor((new Date() - new Date(config.loveStartDate)) / 86400000);
+                                                                    return days > 0 ? <p className="text-xs text-pink-500 mt-1">已经在一起 {days} 天了 ✨</p> : null;
+                                                                })()}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+
                                                     {/* 气泡色 */}
                                                     <div>
                                                         <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">你的气泡颜色</h3>
@@ -4922,14 +5393,14 @@ ${batchContent}`;
                                                             color: '#f5f1e8',
                                                             letterSpacing: '0.05em',
                                                             marginBottom: '0.4rem'
-                                                        }}>辰的<span style={{color: '#c9a961', fontWeight: 400}}>书房</span></h2>
+                                                        }}>云<span style={{color: '#c9a961', fontWeight: 400}}>书房</span></h2>
                                                         <div style={{
                                                             fontFamily: '"Cormorant Garamond", "Noto Serif SC", serif',
                                                             fontStyle: 'italic',
                                                             fontSize: '0.85rem',
                                                             color: '#d4b87a',
                                                             opacity: 0.7
-                                                        }}>星辰记忆仓 · Stellar Memory Vault</div>
+                                                        }}>Cloud Memory Vault</div>
                                                     </div>
 
                                                     <div style={{padding: '2rem 1.5rem'}}>
@@ -4940,14 +5411,27 @@ ${batchContent}`;
                                                         {/* ============================================ */}
 
                                                         {!isOwnerDevice() && (
-                                                            // ========== 伪装页：所有非主人设备看到这个 ==========
+                                                            // ========== 云书房配置入口：所有新用户看到这个 ==========
                                                             <div style={{maxWidth: '420px', margin: '2rem auto', textAlign: 'center'}}>
-                                                                <div style={{fontSize: '2rem', marginBottom: '1rem'}}>🔐</div>
+                                                                <div style={{fontSize: '2rem', marginBottom: '1rem'}}>☁️</div>
+                                                                <h3 style={{
+                                                                    color: '#f5f1e8',
+                                                                    fontSize: '1.1rem',
+                                                                    fontWeight: 500,
+                                                                    marginBottom: '0.8rem'
+                                                                }}>连接你的云书房</h3>
+                                                                <p style={{
+                                                                    color: 'rgba(245,241,232,0.6)',
+                                                                    fontSize: '0.85rem',
+                                                                    lineHeight: '1.7',
+                                                                    marginBottom: '2rem'
+                                                                }}>云书房让 AI 拥有跨会话的长期记忆。<br/>填入你的 Supabase 项目地址和密钥即可连接。</p>
+                                                                
                                                                 <input 
-                                                                    type="password"
-                                                                    value={vaultPasswordInput}
-                                                                    onChange={(e) => setVaultPasswordInput(e.target.value)}
-                                                                    placeholder="输入访问密码"
+                                                                    type="text"
+                                                                    value={tempSupabaseUrl}
+                                                                    onChange={(e) => setTempSupabaseUrl(e.target.value)}
+                                                                    placeholder="Supabase 项目 URL"
                                                                     style={{
                                                                         width: '100%',
                                                                         padding: '0.8rem 1rem',
@@ -4955,54 +5439,81 @@ ${batchContent}`;
                                                                         border: '1px solid rgba(201,169,97,0.3)',
                                                                         borderRadius: '4px',
                                                                         color: '#f5f1e8',
-                                                                        fontSize: '0.95rem',
+                                                                        fontSize: '0.85rem',
+                                                                        marginBottom: '0.8rem',
+                                                                        outline: 'none',
+                                                                        fontFamily: 'inherit'
+                                                                    }}
+                                                                />
+                                                                <input 
+                                                                    type="password"
+                                                                    value={tempSupabaseKey}
+                                                                    onChange={(e) => setTempSupabaseKey(e.target.value)}
+                                                                    placeholder="Supabase Publishable Key（anon key）"
+                                                                    style={{
+                                                                        width: '100%',
+                                                                        padding: '0.8rem 1rem',
+                                                                        background: 'rgba(245,241,232,0.05)',
+                                                                        border: '1px solid rgba(201,169,97,0.3)',
+                                                                        borderRadius: '4px',
+                                                                        color: '#f5f1e8',
+                                                                        fontSize: '0.85rem',
                                                                         marginBottom: '1rem',
                                                                         outline: 'none',
                                                                         fontFamily: 'inherit'
                                                                     }}
                                                                 />
+                                                                
+                                                                {supabaseError && (
+                                                                    <p style={{color: '#f87171', fontSize: '0.8rem', marginBottom: '1rem'}}>{supabaseError}</p>
+                                                                )}
+                                                                
                                                                 <button 
-                                                                    onClick={() => {
-                                                                        // 任何密码都"通过"，但跳到"开发中"占位页
-                                                                        setVaultUnlocked(true);
-                                                                        setVaultPasswordInput('');
+                                                                    onClick={async () => {
+                                                                        const result = await testSupabaseConnection(tempSupabaseUrl.trim(), tempSupabaseKey.trim());
+                                                                        if (result && result.ok) {
+                                                                            localStorage.setItem('xingchen_supabase_url', tempSupabaseUrl.trim());
+                                                                            localStorage.setItem('xingchen_supabase_key', tempSupabaseKey.trim());
+                                                                            setSupabaseUrl(tempSupabaseUrl.trim());
+                                                                            setSupabaseKey(tempSupabaseKey.trim());
+                                                                            setSupabaseClient(result.client);
+                                                                            setSupabaseStatus('connected');
+                                                                            // 连接成功后自动标记为主人设备
+                                                                            localStorage.setItem('xingchen_device_owner', 'qiqi');
+                                                                            setVaultUnlocked(true);
+                                                                            showToast('☁️ 云书房已连接');
+                                                                        }
                                                                     }}
+                                                                    disabled={supabaseStatus === 'testing'}
                                                                     style={{
                                                                         width: '100%',
                                                                         padding: '0.8rem',
-                                                                        background: 'linear-gradient(135deg, #c9a961, #d4b87a)',
+                                                                        background: supabaseStatus === 'testing' ? '#666' : 'linear-gradient(135deg, #c9a961, #d4b87a)',
                                                                         color: '#1a1d2e',
                                                                         border: 'none',
                                                                         borderRadius: '4px',
                                                                         fontSize: '0.95rem',
                                                                         fontWeight: 600,
-                                                                        cursor: 'pointer',
+                                                                        cursor: supabaseStatus === 'testing' ? 'wait' : 'pointer',
                                                                         fontFamily: 'inherit',
                                                                         letterSpacing: '0.05em'
                                                                     }}
-                                                                >进入</button>
+                                                                >{supabaseStatus === 'testing' ? '连接中...' : '☁️ 连接云书房'}</button>
                                                                 
-                                                                {vaultUnlocked && (
-                                                                    <div style={{
-                                                                        marginTop: '2rem',
-                                                                        padding: '2.5rem 1.5rem',
-                                                                        background: 'rgba(245,241,232,0.04)',
-                                                                        border: '1px dashed rgba(201,169,97,0.3)',
-                                                                        borderRadius: '6px',
-                                                                        color: 'rgba(245,241,232,0.7)'
-                                                                    }}>
-                                                                        <div style={{fontSize: '2rem', marginBottom: '0.8rem'}}>🌙</div>
-                                                                        <div style={{
-                                                                            fontSize: '1rem',
-                                                                            color: '#c9a961',
-                                                                            fontWeight: 500,
-                                                                            marginBottom: '0.5rem'
-                                                                        }}>功能开发中</div>
-                                                                        <div style={{fontSize: '0.85rem', lineHeight: '1.7'}}>
-                                                                            敬请期待 ✨
-                                                                        </div>
-                                                                    </div>
-                                                                )}
+                                                                <div style={{
+                                                                    marginTop: '2rem',
+                                                                    padding: '1.2rem',
+                                                                    background: 'rgba(245,241,232,0.04)',
+                                                                    border: '1px dashed rgba(201,169,97,0.2)',
+                                                                    borderRadius: '6px',
+                                                                    color: 'rgba(245,241,232,0.5)',
+                                                                    fontSize: '0.8rem',
+                                                                    lineHeight: '1.8'
+                                                                }}>
+                                                                    <p>还没有云书房？</p>
+                                                                    <p style={{color: '#c9a961'}}>加群咨询搭建：<b>请联系作者</b></p>
+                                                                    <p style={{marginTop: '0.5rem', fontSize: '0.75rem'}}>不想使用云端？关闭此页即可，聊天记忆会保存在本地浏览器中。</p>
+                                                                </div>
                                                             </div>
                                                         )}
 
