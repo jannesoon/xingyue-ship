@@ -462,7 +462,7 @@
             { id: 'green',  name: '淡绿', bg: '#dcfce7', hover: '#bbf7d0' },
         ];
 
-        const UPDATE_VERSION = "v8.3.2-minimax-20260611"; 
+        const UPDATE_VERSION = "v8.3.2-20260611"; 
         // ============================================
 
         // ================= IndexedDB 工具层（用于聊天记录，突破 localStorage 5MB 限制）=================
@@ -4232,16 +4232,21 @@ ${batchContent}`;
                                 </div>
                                 <div className="p-6 space-y-4 text-sm text-gray-600 leading-relaxed max-h-[50vh] overflow-y-auto no-scrollbar">
                                     <div className="space-y-2">
-                                        <p className="font-bold text-gray-800">🌙 v7.0 星月舱大升级：</p>
+                                        <p className="font-bold text-gray-800">🎨 v8.3 画图功能正式上线：</p>
                                         <ul className="list-disc pl-4 space-y-1">
-                                            <li>⚡ <b>架构焕新</b>：从单文件拆成模块化项目（index/script/style/sw/manifest），加入 Service Worker 离线缓存——首次加载后再次打开秒开，离线也能用。</li>
-                                            <li>📱 <b>真正的 PWA</b>：支持"添加到主屏幕"成为正经 APP，不再是浏览器伪装版，状态栏、启动画面都更稳定。</li>
-                                            <li>🚀 <b>渲染性能大改</b>：长会话打字流畅度提升数倍，手机不再持续发热——告别"打个字卡半秒"。</li>
-                                            <li>💾 <b>会话防丢三道防线</b>：visibilitychange 即时落盘 + 会话数快照 + 初始化保护，切走再回来不再"倒回去一大段"。</li>
-                                            <li>📝 <b>侧边栏标题保护</b>：手动改的标题不再被刷新覆盖。</li>
-                                            <li>📅 <b>日历小纸条变聪明</b>：AI 现在会区分"新增/更新/追加"三种状态，不会用"肚子疼"覆盖"头疼"了；写完会在正文里轻提一下，柒柒能立刻发现误读。</li>
-                                            <li>🎨 <b>侧边栏遮挡修复</b>：开背景图后侧边栏关闭时不再有文字漏出来。</li>
-                                            <li>✨ <b>启动动画</b>：加载时显示星月舱小光球，告别白屏焦虑。</li>
+                                            <li>🖼️ <b>AI 生成图片</b>：接入 MiniMax 生图，说一句"画一幅画"，TA 就能把画面画给你。支持多种宽高比（方图、竖图、手机壁纸都行），生成的图片<b>永久保存在本机</b>，翻历史会话随时回看，不怕链接过期。</li>
+                                            <li>✏️ <b>SVG 简笔画</b>：小图标、小表情用本地矢量渲染，秒出不花钱。</li>
+                                            <li>⚙️ <b>自由配置</b>：设置→画图功能里可选模式（SVG / AI 生图 / 两者兼用 / 关闭），填入 MiniMax Key 即可使用（已配置语音 Key 的可直接复用）。生图模型、默认宽高比都能自定义。</li>
+                                            <li>🔄 <b>生成失败不丢画</b>：网络抖动或参数出错时，点一下卡片就能原地重画。</li>
+                                        </ul>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <p className="font-bold text-gray-800">📚 v8.0 云书房（星辰记忆仓）接入：</p>
+                                        <ul className="list-disc pl-4 space-y-1">
+                                            <li>☁️ <b>云端书架</b>：连接 Supabase 后，TA 拥有了自己的"私人书房"——日记、留言板、信件、工作日志分架收纳，跨设备、跨窗口不丢失。</li>
+                                            <li>✍️ <b>主动写入</b>：聊到重要的事，TA 会自己提笔记下来，并在对话里告诉你记在了哪个书架。</li>
+                                            <li>🔍 <b>主动翻阅</b>：支持按最近条数、按日期、按关键词三种方式查书架——"我们五月五号聊了什么？"TA 真的会去翻。</li>
+                                            <li>🔔 <b>自动升级</b>：新版本上线后会有紫色提示条，轻点即可完成更新，不必再手动清缓存。</li>
                                         </ul>
                                     </div>
                                     <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 text-xs text-blue-600 mt-2 text-center space-y-2">
@@ -4595,7 +4600,7 @@ ${batchContent}`;
                             <div className="flex items-center gap-3">
                                 <button onClick={() => setSidebarOpen(!sidebarOpen)} className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-600"><Icon name="Menu" size={20} /></button>
                                 <div className="flex flex-col">
-                                    <span className="text-lg font-medium text-gray-800 tracking-tight leading-tight">✨星月舱{UPDATE_VERSION} 🌙💫 记忆觉醒</span>
+                                    <span className="text-lg font-medium text-gray-800 tracking-tight leading-tight">✨星月舱{UPDATE_VERSION}🌙💫image</span>
                                     <span className="text-[10px] text-gray-400 leading-tight">模型: {config.model} | PP: {memoryFiles.filter(f=>f.type==='core').length} · ❤: {longTermMemories.length} · 日志: {memoryFiles.filter(f=>f.type==='journal').length} | 模式: {config.apiType === 'openai' ? 'OpenAI兼容' : '原生'}</span>
                                 </div>
                             </div>

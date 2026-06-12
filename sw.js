@@ -1,7 +1,7 @@
 // 星月舱 Service Worker —— 离线缓存让第二次启动起秒开
 // 改了代码上线后，把下面的 CACHE_VERSION 数字 +1，用户的浏览器会自动拉新版
 
-const CACHE_VERSION = 'xingyue-v33';
+const CACHE_VERSION = 'xingyue-v34';
 
 // 需要缓存的本地文件
 const LOCAL_ASSETS = [
