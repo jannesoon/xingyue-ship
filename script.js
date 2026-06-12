@@ -183,11 +183,22 @@
                     drawBlocks.push({ title: title.trim(), svg: svg.trim() });
                     return `\x01DRAW${drawBlocks.length - 1}\x01`;
                 });
-                // ★ v8.2 AI绘图信号 [[IMG:描述|英文prompt]] 提取 (Pollinations) —— 兼容中文括号【】
+                // ★ v8.2 AI绘图信号 [[IMG:描述|英文prompt]] 提取 —— 兼容中文括号【】
+                //   v8.3 起新图统一走 MiniMax（流式结束后被 processImgGenAsync 改写成 IMGGEN 标记），
+                //   这里保留 Pollinations 渲染仅作【历史会话兼容】：老消息里的裸 IMG 标记照常显示，
+                //   以及流式进行中的短暂占位。
                 const imgBlocks = [];
                 cleaned = cleaned.replace(/(?:\[\[|【)IMG[:：]([^|\]】]*)(?:\||｜)([\s\S]*?)(?:\]\]|】)/g, (_, desc, prompt) => {
                     imgBlocks.push({ desc: desc.trim(), prompt: prompt.trim() });
                     return `\x01IMG${imgBlocks.length - 1}\x01`;
+                });
+                // ★ v8.3 MiniMax 已生成图片标记 [[IMGGEN:描述|imgId|encodeURIComponent(prompt)|ar]] 提取
+                //   图片本体在 IndexedDB images 仓库，渲染后由 useEffect 异步填充；
+                //   prompt 留在标记里是为了 IDB 没图时（换设备/生成失败）能点卡片重画
+                const imgGenBlocks = [];
+                cleaned = cleaned.replace(/(?:\[\[|【)IMGGEN[:：]([^|\]】]*)(?:\||｜)([^|\]】]*)(?:\||｜)([^|\]】]*)(?:(?:\||｜)([^\]】]*))?(?:\]\]|】)/g, (_, desc, imgId, encPrompt, ar) => {
+                    imgGenBlocks.push({ desc: (desc || '').trim(), imgId: (imgId || '').trim(), encPrompt: (encPrompt || '').trim(), ar: (ar || '').trim() });
+                    return `\x01IMGGEN${imgGenBlocks.length - 1}\x01`;
                 });
                 let h = marked.parse(cleaned);
                 h = renderLatex(h);
@@ -211,10 +222,25 @@
                     const titleEsc = (block.title || '画作').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
                     return `<div class="xy-draw-card" style="margin:0.8em 0;padding:0;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;background:#fafafa;"><div style="padding:8px 12px;font-size:12px;color:#6b7280;display:flex;align-items:center;gap:6px;border-bottom:1px solid #f3f4f6;"><span>🎨</span><span>${titleEsc}</span></div><div style="padding:12px;display:flex;justify-content:center;align-items:center;min-height:120px;background:#fff;">${safeSvg}</div></div>`;
                 });
-                // ★ v8.2 AI绘图信号还原：把占位符换回 Pollinations 图片卡片（含自动重试）
-                if (imgBlocks.length > 0) {
+                // ★ AI绘图样式（spinner），IMG（legacy Pollinations）与 IMGGEN（MiniMax）共用
+                if (imgBlocks.length > 0 || imgGenBlocks.length > 0) {
                     h = `<style>@keyframes spin{to{transform:rotate(360deg)}}.xy-img-spinner{width:40px;height:40px;border:3px solid #e5e7eb;border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto;}</style>` + h;
                 }
+                // ★ v8.3 MiniMax 图片卡还原：占位卡渲染后由 useEffect 调 _xyMmxFill 从 IDB 异步填图
+                h = h.replace(/\x01IMGGEN(\d+)\x01/g, (_, i) => {
+                    const block = imgGenBlocks[parseInt(i, 10)];
+                    if (!block) return '';
+                    const descEsc = (block.desc || '画作').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+                    const uid = 'mmximg_' + block.imgId + '_' + i;
+                    const promptAttr = (block.encPrompt || '').replace(/"/g, '&quot;');
+                    const arAttr = (block.ar || '').replace(/"/g, '&quot;');
+                    return `<div class="xy-draw-card xy-mmx-card" data-uid="${uid}" data-imgid="${block.imgId}" style="margin:0.8em 0;padding:0;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;background:#fafafa;">` +
+                        `<div style="padding:8px 12px;font-size:12px;color:#6b7280;display:flex;align-items:center;gap:6px;border-bottom:1px solid #f3f4f6;"><span>🖼️</span><span>${descEsc}</span></div>` +
+                        `<div style="padding:4px;display:flex;flex-direction:column;justify-content:center;align-items:center;min-height:160px;background:#fff;">` +
+                            `<div id="${uid}_loader" style="text-align:center;color:#9ca3af;font-size:12px;"><div class="xy-img-status" style="margin-bottom:8px;">🌙 取出画作中...</div><div class="xy-img-spinner"></div></div>` +
+                            `<img id="${uid}" alt="${descEsc}" style="max-width:100%;border-radius:8px;display:none;" data-imgid="${block.imgId}" data-prompt="${promptAttr}" data-ar="${arAttr}" />` +
+                        `</div></div>`;
+                });
                 // 注册全局图片重试函数(只注册一次)
                 if (!window._xyImgRetry) {
                     window._xyImgRetry = function(uid) {
@@ -283,6 +309,16 @@
             //   - 兜底了非 https 环境的老浏览器(textarea + execCommand)
             React.useEffect(() => {
                 if (!containerRef.current) return;
+                // ★ v8.3 MiniMax 图片卡填充：扫描未填充的卡片，异步从内存缓存/IDB 取图
+                //   data-mmx-bound 防止流式重渲染时重复触发（重渲染后 DOM 重建会自动再填，内存缓存兜底速度）
+                const mmxCards = containerRef.current.querySelectorAll('.xy-mmx-card');
+                mmxCards.forEach(card => {
+                    if (card.dataset.mmxBound === '1') return;
+                    card.dataset.mmxBound = '1';
+                    const uid = card.dataset.uid;
+                    const imgId = card.dataset.imgid;
+                    if (uid && imgId) window._xyMmxFill(uid, imgId);
+                });
                 // 通用复制函数
                 const doCopy = async (text) => {
                     if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -426,13 +462,17 @@
             { id: 'green',  name: '淡绿', bg: '#dcfce7', hover: '#bbf7d0' },
         ];
 
-        const UPDATE_VERSION = "v8.1-alpha-20260603"; 
+        const UPDATE_VERSION = "v8.3.2-minimax-20260611"; 
         // ============================================
 
         // ================= IndexedDB 工具层（用于聊天记录，突破 localStorage 5MB 限制）=================
         const DB_NAME = 'xingyue_db';
-        const DB_VERSION = 2;
+        // ★ v8.3：DB_VERSION 2 → 3，新增 images store 存 MiniMax 生成的图片
+        //   消息内容里只留 [[IMGGEN:描述|imgId|prompt]] 轻量标记，base64 大块头单独存这里，
+        //   避免会话体积膨胀拖慢节流写入（IndexedDB 竞态雷区，不再踩）
+        const DB_VERSION = 3;
         const STORE_SESSIONS = 'chat_sessions';
+        const STORE_IMAGES = 'images';
 
         const openDB = () => new Promise((resolve, reject) => {
             const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -441,10 +481,128 @@
                 if (!db.objectStoreNames.contains(STORE_SESSIONS)) {
                     db.createObjectStore(STORE_SESSIONS, { keyPath: 'id' });
                 }
+                if (!db.objectStoreNames.contains(STORE_IMAGES)) {
+                    db.createObjectStore(STORE_IMAGES, { keyPath: 'id' });
+                }
             };
             req.onsuccess = (e) => resolve(e.target.result);
             req.onerror = (e) => reject(e.target.error);
         });
+
+        // ★ v8.3 图片仓库读写（MiniMax 生成图持久化）
+        const idbPutImage = async (imgRecord) => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_IMAGES, 'readwrite');
+                tx.objectStore(STORE_IMAGES).put(imgRecord);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        };
+        const idbGetImage = async (imgId) => {
+            const db = await openDB();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(STORE_IMAGES, 'readonly');
+                const req = tx.objectStore(STORE_IMAGES).get(imgId);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            });
+        };
+        // 内存缓存：同一会话内反复渲染不必每次都进 IDB
+        const _xyImgMemCache = new Map();
+
+        // ================= ★ v8.3 MiniMax 生图引擎 =================
+        // 配置镜像：MessageContent 是 module 级组件拿不到 config state，
+        // App 组件用 useEffect 把画图相关配置同步到这里，全局函数直接读
+        const _mmxCfg = { key: '', url: 'https://api.minimaxi.com/v1/image_generation', model: 'image-01', ar: '1:1' };
+
+        // 调 MiniMax 文生图 API，成功返回 dataUrl（jpeg base64）
+        const MMX_VALID_AR = ['1:1', '16:9', '4:3', '3:2', '2:3', '3:4', '9:16', '21:9'];
+        const xyMinimaxGenerate = async (prompt, ar) => {
+            if (!_mmxCfg.key) throw new Error('未配置 MiniMax Key（设置→通用→画图功能，或复用语音 Key）');
+            // ★ v8.3.1 防御：空 prompt 发过去服务端报玄学错误（2013 missing parameter text），这里直接拦下
+            prompt = (prompt || '').trim();
+            if (!prompt) throw new Error('画图 prompt 为空（标记里 | 后面没写内容）');
+            // ★ v8.3.1 防御：非法宽高比回退默认，避免 2013
+            let finalAr = (ar || _mmxCfg.ar || '1:1').trim();
+            if (MMX_VALID_AR.indexOf(finalAr) === -1) finalAr = '1:1';
+            const body = {
+                model: _mmxCfg.model || 'image-01',
+                prompt: prompt,
+                aspect_ratio: finalAr,
+                response_format: 'base64',
+                n: 1,
+                prompt_optimizer: true
+            };
+            console.log('[星月舱 画图] → 发起生成', { url: _mmxCfg.url, model: body.model, ar: body.aspect_ratio, promptLen: prompt.length, promptHead: prompt.slice(0, 60) });
+            const resp = await fetch(_mmxCfg.url || 'https://api.minimaxi.com/v1/image_generation', {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${_mmxCfg.key.trim()}`, 'Content-Type': 'application/json' },
+                body: JSON.stringify(body)
+            });
+            if (!resp.ok) {
+                let detail = '';
+                try { const j = await resp.json(); detail = (j.base_resp && j.base_resp.status_msg) || JSON.stringify(j).slice(0, 200); } catch(e) {}
+                throw new Error(`MiniMax 返回 ${resp.status}${detail ? '：' + detail : ''}`);
+            }
+            const data = await resp.json();
+            // 业务层错误也可能 200 返回，看 base_resp.status_code
+            if (data.base_resp && data.base_resp.status_code !== 0) {
+                throw new Error(`MiniMax 业务错误 ${data.base_resp.status_code}：${data.base_resp.status_msg || '未知'}`);
+            }
+            const b64 = data.data && data.data.image_base64 && data.data.image_base64[0];
+            if (!b64) throw new Error('MiniMax 响应里没有图片数据');
+            return 'data:image/jpeg;base64,' + b64;
+        };
+
+        // 渲染层异步填图：查内存缓存 → 查 IDB → 有图显示 / 没图显示重试按钮
+        window._xyMmxFill = async function(uid, imgId) {
+            const img = document.getElementById(uid);
+            const loader = document.getElementById(uid + '_loader');
+            if (!img || !loader) return;
+            try {
+                let dataUrl = _xyImgMemCache.get(imgId);
+                if (!dataUrl) {
+                    const rec = await idbGetImage(imgId);
+                    if (rec && rec.dataUrl) { dataUrl = rec.dataUrl; _xyImgMemCache.set(imgId, dataUrl); }
+                }
+                if (dataUrl) {
+                    img.src = dataUrl;
+                    img.style.display = 'block';
+                    loader.style.display = 'none';
+                    return;
+                }
+            } catch (e) { console.error('[星月舱 画图] 读取图片失败', imgId, e); }
+            // 没图：可能是生成失败/换了设备/IDB 被清——显示重试按钮（prompt 还在标记里，能重画）
+            loader.innerHTML = '<div class="xy-img-status" style="color:#ef4444;cursor:pointer;" onclick="window._xyMmxRetry(\'' + uid + '\')">⚠️ 图片未生成，点击重新生成</div>';
+        };
+
+        // 点击重试：读卡片上的 prompt 重新调 MiniMax → 存 IDB → 原地填图
+        window._xyMmxRetry = async function(uid) {
+            const img = document.getElementById(uid);
+            const loader = document.getElementById(uid + '_loader');
+            if (!img || !loader) return;
+            let prompt = decodeURIComponent(img.dataset.prompt || '');
+            // ★ v8.3.1 兜底：标记里 prompt 是空的（生成时模型没写）→ 用卡片上的中文描述（alt）重画
+            if (!prompt.trim() && img.alt) prompt = img.alt;
+            const imgId = img.dataset.imgid || ('mmx_' + Date.now());
+            const ar = img.dataset.ar || '';
+            if (!prompt) { loader.innerHTML = '<div class="xy-img-status" style="color:#ef4444;">⚠️ 缺少 prompt，无法重新生成</div>'; return; }
+            loader.style.display = '';
+            loader.innerHTML = '<div class="xy-img-status" style="margin-bottom:8px;">🎨 MiniMax 正在绘制中...</div><div class="xy-img-spinner"></div>';
+            try {
+                const dataUrl = await xyMinimaxGenerate(prompt, ar);
+                _xyImgMemCache.set(imgId, dataUrl);
+                try { await idbPutImage({ id: imgId, dataUrl: dataUrl, prompt: prompt, createdAt: Date.now() }); } catch(e) { console.error('[星月舱 画图] 重试后存 IDB 失败', e); }
+                img.src = dataUrl;
+                img.style.display = 'block';
+                loader.style.display = 'none';
+            } catch (e) {
+                console.error('[星月舱 画图] 重试生成失败', e);
+                const msgEsc = String(e.message || e).replace(/</g, '&lt;');
+                loader.innerHTML = '<div class="xy-img-status" style="color:#ef4444;cursor:pointer;" onclick="window._xyMmxRetry(\'' + uid + '\')">⚠️ ' + msgEsc + '<br/>点击再试一次</div>';
+            }
+        };
 
         const idbGetAllSessions = async () => {
             const db = await openDB();
@@ -1559,12 +1717,24 @@ ${slice}
                 loveStartDate: '',         // 相恋起始日 YYYY-MM-DD
                 partnerName: '',           // TA的名字（留空则用 aiName）
                 // ★ v8.1 画图功能
-                drawMode: 'svg',           // 'svg'(系统生成) | 'api'(外部API)
-                drawApiUrl: '',            // 外部画图 API 地址（预留）
-                drawApiKey: ''             // 外部画图 API 密钥（预留）
+                // ★ v8.3 画图功能（MiniMax 生图）
+                drawMode: 'both',          // 'svg'(本地SVG) | 'minimax'(MiniMax生图) | 'both'(两者兼用)
+                drawApiUrl: '',            // 生图 API 地址（留空用默认 https://api.minimaxi.com/v1/image_generation）
+                drawApiKey: '',            // 生图专用 Key（留空复用语音的 minimaxKey）
+                drawModel: 'image-01',     // MiniMax 生图模型
+                drawAspectRatio: '1:1'     // 默认宽高比（模型可在标记里用 |ar= 覆盖）
             });
             
             const [availableModels, setAvailableModels] = useState([]);
+
+            // ★ v8.3：把画图配置同步到 module 级 _mmxCfg，供渲染层全局函数（_xyMmxRetry 等）读取
+            //   Key 优先用生图专用 drawApiKey，留空则复用语音的 minimaxKey——同一把钥匙开所有门
+            useEffect(() => {
+                _mmxCfg.key = (config.drawApiKey && config.drawApiKey.trim()) || (config.minimaxKey || '').trim();
+                _mmxCfg.url = (config.drawApiUrl && config.drawApiUrl.trim()) || 'https://api.minimaxi.com/v1/image_generation';
+                _mmxCfg.model = (config.drawModel && config.drawModel.trim()) || 'image-01';
+                _mmxCfg.ar = config.drawAspectRatio || '1:1';
+            }, [config.drawApiKey, config.minimaxKey, config.drawApiUrl, config.drawModel, config.drawAspectRatio]);
             const [memoryFiles, setMemoryFiles] = useState([]); 
             const [longTermMemories, setLongTermMemories] = useState([]); // ❤ 长期记忆条目
             const [editingLTMIndex, setEditingLTMIndex] = useState(null);
@@ -1631,9 +1801,13 @@ ${slice}
                     if (!parsed.apiPresets) parsed.apiPresets = [];
                     if (parsed.loveStartDate === undefined) parsed.loveStartDate = '';
                     if (parsed.partnerName === undefined) parsed.partnerName = '';
-                    if (parsed.drawMode === undefined) parsed.drawMode = 'svg';
+                    if (parsed.drawMode === undefined) parsed.drawMode = 'both';
+                    // ★ v8.3 迁移：Pollinations 已下线、'api' 口已落地为 MiniMax，老值统一迁过去
+                    if (parsed.drawMode === 'pollinations' || parsed.drawMode === 'api') parsed.drawMode = 'minimax';
                     if (parsed.drawApiUrl === undefined) parsed.drawApiUrl = '';
                     if (parsed.drawApiKey === undefined) parsed.drawApiKey = '';
+                    if (parsed.drawModel === undefined) parsed.drawModel = 'image-01';
+                    if (parsed.drawAspectRatio === undefined) parsed.drawAspectRatio = '1:1';
                     
                     setConfig(prev => ({...prev, ...parsed}));
                 }
@@ -2976,29 +3150,34 @@ ${batchContent}`;
 5. 每轮对话最多触发 3 次读取，避免死循环。只在真的需要时才读，不必逢话必查。` : '') +
                     // ★ v8.0-alpha+patch-20260524b：注入本会话最近写入记录，防同主题重复
                     ((recentVaultWritesRef.current && recentVaultWritesRef.current.length > 0) ? '\n\n【本会话最近写入记录】（这是你刚才在本次对话里写入云端的内容，请不要再针对同主题重复写入；如果柒柒带来新角度才考虑续写一笔）：\n' + recentVaultWritesRef.current.map(function(w, i) { return (i + 1) + '. [' + w.shelf + '] 「' + w.title + '」 → ' + w.preview + (w.preview && w.preview.length >= 60 ? '…' : ''); }).join('\n') : '') +
-                    // ★ v8.2 画图能力说明（SVG + AI绘图）
-                    `\n\n【画图能力】
-你有两种画图方式，根据场景选择最合适的：
-
+                    // ★ v8.3 画图能力说明（SVG + MiniMax 生图），按 drawMode 条件注入
+                    //   v8.3.2：drawMode === 'off' 时整段不注入——避免切到外部画图模型时被标记机制"截胡"转 MiniMax
+                    (config.drawMode === 'off' ? '' :
+                    `\n\n【画图能力】` +
+                    ((config.drawMode === 'svg' || config.drawMode === 'both' || !config.drawMode) ? `
 📌 方式一：SVG 矢量插画（适合图标、简笔画、装饰图案）
 格式：[[DRAW:标题|<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">...SVG内容...</svg>]]
-技巧：用渐变(linearGradient/radialGradient)、圆角几何体、低透明度叠层做光影，配色用马卡龙色系或星夜色系。
-
-📌 方式二：AI 生成图片（适合风景、人物、场景、写实画面）
+技巧：用渐变(linearGradient/radialGradient)、圆角几何体、低透明度叠层做光影，配色用马卡龙色系或星夜色系。` : '') +
+                    ((config.drawMode === 'minimax' || config.drawMode === 'both' || !config.drawMode) ? `
+📌 方式二：AI 生成图片（适合风景、人物、场景、写实画面，由 MiniMax 生成）
 格式：[[IMG:中文描述|english prompt keywords, separated by commas, style description]]
-示例：[[IMG:星空下的少女|anime girl standing under starry sky, flowing dress, soft moonlight, dreamy atmosphere, beautiful detailed art, masterpiece]]
-要求：英文prompt要详细，包含画面主体、环境、光线、风格、品质词。风格建议加 anime/illustration/watercolor/oil painting 等。
+可选：在 prompt 后追加宽高比，如 [[IMG:描述|prompt|ar=9:16]]（可用 1:1, 3:4, 4:3, 9:16, 16:9, 2:3, 3:2, 21:9，不写则用柒柒设置的默认值）
+示例：[[IMG:星空下的少女|anime girl standing under starry sky, flowing dress, soft moonlight, dreamy atmosphere, beautiful detailed art, masterpiece|ar=3:4]]
+要求：英文prompt要详细，包含画面主体、环境、光线、风格、品质词。风格建议加 anime/illustration/watercolor/oil painting 等。**| 后面的 prompt 段绝对不能留空**——画面描述要写进标记里的 prompt 段，不是只写在正文里。
+注意：图片在你回复完成后才开始生成（需要几秒），生成好会直接出现在你放标记的位置，柒柒看得到，你不需要描述"图片正在生成"。` : '') +
+                    ((config.drawMode === 'both' || !config.drawMode) ? `
 
 【选择建议】
 - 柒柒说"画个小图标""画个表情"→ 用 SVG（方式一）
 - 柒柒说"画一幅画""画个风景""画我们俩"→ 用 AI 生成（方式二）
-- 不确定时优先用方式二，画面效果更好
+- 不确定时优先用方式二，画面效果更好` : '') +
+                    `
 
 【通用规则】
 - 当柒柒说"画个XX"、"画一下"时，用这个能力画。不要说"我不会画画"。
 - 标记放在回复中你希望图片出现的位置。
 - 不要每次对话都主动画——只在被要求时，或者你觉得画一个能让柒柒开心时才画。
-- 绝对不要输出 <img> 标签或 ![image]() markdown 图片语法，只用上面两种 [[DRAW:...|...]] 或 [[IMG:...|...]] 标记格式。`;
+- 绝对不要输出 <img> 标签或 ![image]() markdown 图片语法，只用上面的画图标记格式。`);
 
                 const limit = (parseInt(config.historyLimit) || 10) * 2; 
                 let contextMsgs = newMessages.slice(-limit);
@@ -3181,7 +3360,7 @@ ${batchContent}`;
             // 输入：原始 aiText（含 [[VAULT_READ:shelf|n]] 标记）
             // 输出：Promise<string>，把标记替换成 <details> 折叠 HTML 区块的文本
             // 没有 VAULT_READ 标记的话直接返回原文（无云端查询）
-            const processVaultReadAsync = async (text) => {
+            const processVaultReadAsyncCore = async (text) => {
                 const readTags = detectVaultReadTags(text);
                 if (readTags.length === 0) return text;
                 if (!supabaseClient) {
@@ -3231,6 +3410,56 @@ ${batchContent}`;
                     return text.replace(/\[\[VAULT_READ:\w[\w-]*(?:\|[^\]]+)?\]\]/g,
                         '\n\n<details class="normal-details"><summary>📚 书架翻阅失败</summary>\n\n（' + (e.message || e) + '）\n\n</details>');
                 }
+            };
+
+            // ★★★ v8.3：MiniMax 生图流程 ★★★
+            // 流式结束后扫描回复里的 [[IMG:描述|prompt]]（可选 |ar=宽高比）标记：
+            //   调 MiniMax image_generation（base64）→ 图片存 IndexedDB images 仓库
+            //   → 标记原地改写为 [[IMGGEN:描述|imgId|encodeURIComponent(prompt)|ar]]
+            // 改写后的标记才进 messages 落盘——消息体里永远只有轻量引用，不背 base64 大包袱。
+            // 生成失败也照样改写（IDB 里没图），渲染层会显示"点击重新生成"卡片，prompt 随标记保存，随时能重画。
+            const processImgGenAsync = async (text) => {
+                if (!text || text.indexOf('IMG') === -1) return text;
+                // 只匹配裸 IMG（IMG 后必须紧跟冒号，不会误吃 IMGGEN）
+                const re = /(?:\[\[|【)IMG[:：]([^|\]】]*)(?:\||｜)([\s\S]*?)(?:\]\]|】)/g;
+                const matches = [];
+                let m;
+                while ((m = re.exec(text)) !== null) {
+                    matches.push({ full: m[0], desc: (m[1] || '').trim(), rest: (m[2] || '').trim() });
+                }
+                if (matches.length === 0) return text;
+                // SVG-only / 关闭模式不处理：off 是硬开关（外部画图模型的输出绝不转 MiniMax），svg 是兜底
+                if (config.drawMode === 'svg' || config.drawMode === 'off') return text;
+                let result = text;
+                // 串行生成防限流（一条回复通常只有 1 张）
+                for (const mt of matches) {
+                    // rest 可能是 "prompt" 或 "prompt|ar=3:4"（兼容中文｜）
+                    let prompt = mt.rest, ar = '';
+                    const arMatch = mt.rest.match(/^([\s\S]*?)(?:\||｜)\s*ar\s*=\s*([\d]+:[\d]+)\s*$/);
+                    if (arMatch) { prompt = arMatch[1].trim(); ar = arMatch[2]; }
+                    // ★ v8.3.1 兜底：模型偶尔只写中文描述、prompt 段留空——直接拿描述当 prompt
+                    //   MiniMax 原生支持中文 prompt（官方示例就有"女孩在图书馆的窗户前"），不挑食
+                    if (!prompt.trim() && mt.desc) prompt = mt.desc;
+                    const imgId = 'mmx_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+                    try {
+                        const dataUrl = await xyMinimaxGenerate(prompt, ar);
+                        _xyImgMemCache.set(imgId, dataUrl);
+                        await idbPutImage({ id: imgId, dataUrl: dataUrl, desc: mt.desc, prompt: prompt, createdAt: Date.now() });
+                        console.log('[星月舱 画图] ✅ MiniMax 生成成功', imgId);
+                    } catch (e) {
+                        console.error('[星月舱 画图] ❌ MiniMax 生成失败（标记仍改写，可点卡片重试）:', e);
+                    }
+                    const newTag = `[[IMGGEN:${mt.desc}|${imgId}|${encodeURIComponent(prompt)}${ar ? '|' + ar : ''}]]`;
+                    result = result.replace(mt.full, newTag);
+                }
+                return result;
+            };
+
+            // 包装层：所有回复路径调的都是这个名字——先处理 VAULT_READ，再处理图片生成
+            const processVaultReadAsync = async (text) => {
+                let t = await processVaultReadAsyncCore(text);
+                t = await processImgGenAsync(t);
+                return t;
             };
 
             // ★★★ v8.0-alpha+patch-20260523：VAULT_READ 信号约定 ★★★
@@ -4938,39 +5167,58 @@ ${batchContent}`;
                                                         )}
                                                     </div>
                                                     
-                                                    {/* ★ v8.2 画图配置 */}
+                                                    {/* ★ v8.3 画图配置（MiniMax 生图） */}
                                                     <div>
                                                         <h3 className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-3">画图功能 🎨</h3>
                                                         <div className="bg-gray-50 rounded-xl p-4 space-y-3">
                                                             <div className="flex items-center gap-3">
                                                                 <label className="text-xs text-gray-600 font-medium">画图模式</label>
                                                                 <select 
-                                                                    value={config.drawMode || 'svg'}
+                                                                    value={config.drawMode || 'both'}
                                                                     onChange={e => setConfig({...config, drawMode: e.target.value})}
                                                                     className="flex-1 bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none"
                                                                 >
+                                                                    <option value="off">关闭画图（不注入画图能力）</option>
                                                                     <option value="svg">SVG 简笔画（本地渲染）</option>
-                                                                    <option value="pollinations">AI 生成图片（Pollinations 免费）</option>
+                                                                    <option value="minimax">AI 生成图片（MiniMax）</option>
                                                                     <option value="both">两者兼用（推荐）</option>
-                                                                    <option value="api">外部画图 API（开发中）</option>
                                                                 </select>
                                                             </div>
-                                                            {config.drawMode === 'pollinations' && (
-                                                                <p className="text-xs text-green-600">✅ 使用 Pollinations.ai 免费生成图片，无需配置API Key。图片生成需要几秒钟加载。</p>
+                                                            {config.drawMode === 'off' && (
+                                                                <p className="text-xs text-gray-500">⏸️ 画图能力已关闭：不会向模型注入画图说明，也不会调用 MiniMax 生图。适合临时切到外部画图模型、或想省生图费用的时候。历史消息里已生成的图片不受影响，照常显示。</p>
                                                             )}
                                                             {config.drawMode === 'both' && (
-                                                                <p className="text-xs text-blue-600">✅ 模型会根据场景自动选择：简单图标用SVG，风景/人物用AI生成。</p>
+                                                                <p className="text-xs text-blue-600">✅ 模型会根据场景自动选择：简单图标用SVG，风景/人物用 MiniMax 生成。</p>
                                                             )}
-                                                            {config.drawMode === 'api' && (
+                                                            {(config.drawMode === 'minimax' || config.drawMode === 'both') && (
                                                                 <div className="space-y-2 pt-2 border-t border-gray-200">
-                                                                    <p className="text-xs text-amber-600">⚠️ 外部画图 API 接入正在开发中，敬请期待。</p>
+                                                                    <p className="text-xs text-green-600">✅ 使用 MiniMax 图片生成 API，图片以 base64 永久存本机（历史会话可回看）。Key 留空时自动复用上方语音的 MiniMax Key。</p>
                                                                     <div>
-                                                                        <label className="block text-[10px] text-gray-500 font-bold mb-1">画图 API 地址</label>
-                                                                        <input type="text" value={config.drawApiUrl} onChange={e => setConfig({...config, drawApiUrl: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none" placeholder="https://api.example.com/v1/images" disabled />
+                                                                        <label className="block text-[10px] text-gray-500 font-bold mb-1">生图 API Key（留空复用语音 Key）</label>
+                                                                        <input type="password" value={config.drawApiKey} onChange={e => setConfig({...config, drawApiKey: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none" placeholder="留空则使用语音的 MiniMax Key" />
                                                                     </div>
                                                                     <div>
-                                                                        <label className="block text-[10px] text-gray-500 font-bold mb-1">画图 API Key</label>
-                                                                        <input type="password" value={config.drawApiKey} onChange={e => setConfig({...config, drawApiKey: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none" placeholder="sk-..." disabled />
+                                                                        <label className="block text-[10px] text-gray-500 font-bold mb-1">生图 API 地址</label>
+                                                                        <input type="text" value={config.drawApiUrl} onChange={e => setConfig({...config, drawApiUrl: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none" placeholder="默认: https://api.minimaxi.com/v1/image_generation" />
+                                                                    </div>
+                                                                    <div className="flex gap-3">
+                                                                        <div className="flex-1">
+                                                                            <label className="block text-[10px] text-gray-500 font-bold mb-1">生图模型</label>
+                                                                            <input type="text" value={config.drawModel} onChange={e => setConfig({...config, drawModel: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none" placeholder="image-01" />
+                                                                        </div>
+                                                                        <div className="flex-1">
+                                                                            <label className="block text-[10px] text-gray-500 font-bold mb-1">默认宽高比</label>
+                                                                            <select value={config.drawAspectRatio || '1:1'} onChange={e => setConfig({...config, drawAspectRatio: e.target.value})} className="w-full bg-white border border-gray-200 rounded-lg p-2 text-sm outline-none">
+                                                                                <option value="1:1">1:1 方形</option>
+                                                                                <option value="3:4">3:4 竖图</option>
+                                                                                <option value="4:3">4:3 横图</option>
+                                                                                <option value="9:16">9:16 手机壁纸</option>
+                                                                                <option value="16:9">16:9 宽屏</option>
+                                                                                <option value="2:3">2:3</option>
+                                                                                <option value="3:2">3:2</option>
+                                                                                <option value="21:9">21:9 超宽</option>
+                                                                            </select>
+                                                                        </div>
                                                                     </div>
                                                                 </div>
                                                             )}
