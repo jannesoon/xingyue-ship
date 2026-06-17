@@ -1,7 +1,7 @@
 // 星月舱 Service Worker —— 离线缓存让第二次启动起秒开
 // 改了代码上线后，把下面的 CACHE_VERSION 数字 +1，用户的浏览器会自动拉新版
 
-const CACHE_VERSION = 'xingyue-v34';
+const CACHE_VERSION = 'xingyue-v38';
 
 // 需要缓存的本地文件
 const LOCAL_ASSETS = [
@@ -12,13 +12,13 @@ const LOCAL_ASSETS = [
     './manifest.json'
 ];
 
-// 需要缓存的外部 CDN（这里是大头！babel-standalone 那 3MB 就在里面）
+// 需要缓存的外部 CDN（★ v8.3.3 锁版本号 + 迁移 jsdelivr）
 const CDN_ASSETS = [
     'https://cdn.tailwindcss.com',
-    'https://unpkg.com/react@18/umd/react.production.min.js',
-    'https://unpkg.com/react-dom@18/umd/react-dom.production.min.js',
-    'https://unpkg.com/@babel/standalone/babel.min.js',
-    'https://cdn.jsdelivr.net/npm/marked/marked.min.js',
+    'https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js',
+    'https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js',
+    'https://cdn.jsdelivr.net/npm/@babel/standalone@7.27.0/babel.min.js',
+    'https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js',
     'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css',
     'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js'
 ];

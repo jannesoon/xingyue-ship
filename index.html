@@ -13,11 +13,12 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%238b5cf6' stroke='%238b5cf6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z'/></svg>">
     <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%238b5cf6' stroke='%238b5cf6' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><path d='m12 3-1.912 5.813a2 2 0 0 1-1.275 1.275L3 12l5.813 1.912a2 2 0 0 1 1.275 1.275L12 21l1.912-5.813a2 2 0 0 1 1.275-1.275L21 12l-5.813-1.912a2 2 0 0 1-1.275-1.275L12 3Z'/></svg>">
 
+    <!-- ★ v8.3.3 CDN 源锁版本号 + 迁移 jsdelivr（防止自动升级炸站 + 国内节点更稳） -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.27.0/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
     <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
     <!-- ★ Supabase 客户端 —— 用于星辰记忆仓的云端存储 -->
@@ -56,6 +57,29 @@
         <div class="boot-spark"></div>
         <div class="boot-text">✨ 星月舱启动中 🌙</div>
     </div>
+    
+    <!-- ★ v8.3.3 CDN 加载失败检测 -->
+    <script>
+    (function checkCDN() {
+        var missing = [];
+        if (typeof React === 'undefined') missing.push('React');
+        if (typeof ReactDOM === 'undefined') missing.push('ReactDOM');
+        if (typeof Babel === 'undefined') missing.push('Babel');
+        if (missing.length > 0) {
+            var loader = document.getElementById('boot-loader');
+            if (loader) {
+                loader.innerHTML = '<div style="text-align:center;padding:24px;font-family:-apple-system,sans-serif;">' +
+                    '<div style="font-size:40px;margin-bottom:16px;">🌙</div>' +
+                    '<div style="color:#8b5cf6;font-size:16px;font-weight:600;margin-bottom:8px;">星月舱启动失败</div>' +
+                    '<div style="color:#666;font-size:13px;line-height:1.6;">' +
+                    '以下依赖加载失败：<br><b>' + missing.join(', ') + '</b><br><br>' +
+                    '① 检查网络连接<br>② 刷新页面重试<br>③ 尝试使用VPN' +
+                    '</div></div>';
+            }
+        }
+    })();
+    </script>
+    
     <div id="root"></div>
 
     <script type="text/babel" src="script.js"></script>
